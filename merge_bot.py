@@ -35,11 +35,12 @@ AUTH = (f"{EMAIL}/token", API_TOKEN)
 
 log(f"✅ Using BASE_URL: {BASE_URL}")
 
-def get_side_convo_tickets_for_period(start_iso, end_iso):
+def get_all_side_convo_tickets():
     tickets = []
-    query = f'type:ticket created>{start_iso} created<{end_iso}'
+    now = datetime.utcnow()
+    start_time = int((now - timedelta(days=1)).timestamp())  # 24 hours ago unix timestamp
 
-    url = f"{BASE_URL}/search.json?query={query}"
+    url = f"{BASE_URL}/incremental/tickets.json?start_time={start_time}"
 
     while url:
         resp = requests.get(url, auth=AUTH)
@@ -48,29 +49,21 @@ def get_side_convo_tickets_for_period(start_iso, end_iso):
             resp.raise_for_status()
 
         data = resp.json()
+
+        # Filter tickets updated in last 24h, status < solved, and side conversation
         side_convo_tickets = [
-            t for t in data.get("results", [])
+            t for t in data.get("tickets", [])
             if t.get("via", {}).get("channel") == "side_conversation"
+            and t.get("status") in ("new", "open", "pending")
+            and datetime.strptime(t.get("updated_at"), "%Y-%m-%dT%H:%M:%SZ") >= now - timedelta(days=1)
         ]
+
         tickets.extend(side_convo_tickets)
 
         url = data.get("next_page")
-        log(f"Fetched {len(side_convo_tickets)} side convo tickets for {start_iso} to {end_iso} (Total so far: {len(tickets)})")
+        log(f"Fetched {len(side_convo_tickets)} side convo tickets with status < solved (Total so far: {len(tickets)})")
 
-    return tickets
-
-def get_all_side_convo_tickets():
-    tickets = []
-    now = datetime.utcnow()
-    for hour_delta in range(24):
-        start = now - timedelta(hours=hour_delta + 1)
-        end = now - timedelta(hours=hour_delta)
-        start_iso = start.replace(microsecond=0).isoformat() + "Z"
-        end_iso = end.replace(microsecond=0).isoformat() + "Z"
-
-        tickets.extend(get_side_convo_tickets_for_period(start_iso, end_iso))
-
-    log(f"Total side conversation tickets fetched for last 24 hours: {len(tickets)}")
+    log(f"Total side conversation tickets fetched for last 24 hours with status < solved: {len(tickets)}")
     return tickets
 
 def reopen_ticket(ticket_id):
