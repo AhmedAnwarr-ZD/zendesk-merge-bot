@@ -35,10 +35,14 @@ AUTH = (f"{EMAIL}/token", API_TOKEN)
 
 log(f"✅ Using BASE_URL: {BASE_URL}")
 
+from datetime import datetime, timedelta
+
 def get_all_side_convo_tickets():
     tickets = []
-    # Basic query to get all tickets (or narrow with other filters if needed)
-    url = f"{BASE_URL}/search.json?query=type:ticket"
+
+    seven_days_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    url = f"{BASE_URL}/search.json?query=type:ticket created>{seven_days_ago}"
 
     while url:
         resp = requests.get(url, auth=AUTH)
@@ -48,14 +52,12 @@ def get_all_side_convo_tickets():
 
         data = resp.json()
 
-        # Filter locally for tickets with side conversation source
         side_convo_tickets = [
             t for t in data.get("results", [])
             if t.get("via", {}).get("channel") == "side_conversation"
         ]
         tickets.extend(side_convo_tickets)
 
-        # Move to next page if exists
         url = data.get("next_page")
         log(f"Fetched {len(side_convo_tickets)} side convo tickets (Total so far: {len(tickets)})")
 
