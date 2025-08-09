@@ -1,87 +1,28 @@
-import requests
-from collections import defaultdict
-import os
+name: Run Zendesk Merge Bot
 
-# Load credentials from GitHub Actions secrets
-SUBDOMAIN = os.environ["SUBDOMAIN"]
-EMAIL = os.environ["EMAIL"]
-API_TOKEN = os.environ["API_TOKEN"]
+on:
+  schedule:
+    - cron: "*/5 * * * *" # every 5 minutes
+  workflow_dispatch:
 
-BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
-AUTH = (f"{EMAIL}/token", API_TOKEN)
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
 
-def get_all_side_convo_tickets():
-    tickets = []
-    url = f"{BASE_URL}/search.json?query=type:ticket status<solved via:side_conversation"
-    while url:
-        resp = requests.get(url, auth=AUTH)
-        resp.raise_for_status()
-        data = resp.json()
-        tickets.extend(data["results"])
-        url = data.get("next_page")
-    return tickets
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
 
-def get_ticket_comments(ticket_id):
-    url = f"{BASE_URL}/tickets/{ticket_id}/comments.json"
-    resp = requests.get(url, auth=AUTH)
-    resp.raise_for_status()
-    return resp.json()["comments"]
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-def add_private_note(ticket_id, body):
-    url = f"{BASE_URL}/tickets/{ticket_id}.json"
-    data = {"ticket": {"comment": {"body": body, "public": False}}}
-    requests.put(url, json=data, auth=AUTH).raise_for_status()
-
-def reopen_ticket(ticket_id):
-    url = f"{BASE_URL}/tickets/{ticket_id}.json"
-    data = {"ticket": {"status": "open"}}
-    requests.put(url, json=data, auth=AUTH).raise_for_status()
-
-def solve_ticket(ticket_id):
-    url = f"{BASE_URL}/tickets/{ticket_id}.json"
-    data = {"ticket": {"status": "solved"}}
-    requests.put(url, json=data, auth=AUTH).raise_for_status()
-
-def process_ticket_merge(primary_id, dup_id):
-    # Check duplicate's status
-    dup_data = requests.get(f"{BASE_URL}/tickets/{dup_id}.json", auth=AUTH).json()
-    dup_status = dup_data["ticket"]["status"]
-
-    if dup_status == "solved":
-        print(f"Reopening solved ticket #{dup_id}")
-        reopen_ticket(dup_id)
-
-    # Copy all comments into primary ticket
-    comments = get_ticket_comments(dup_id)
-    for c in comments:
-        note = f"From merged ticket #{dup_id}:\n{c['body']}"
-        add_private_note(primary_id, note)
-
-    # Solve duplicate
-    solve_ticket(dup_id)
-
-if __name__ == "__main__":
-    print("Fetching unsolved child tickets...")
-    side_tickets = get_all_side_convo_tickets()
-
-    # Group tickets by subject
-    groups = defaultdict(list)
-    for t in side_tickets:
-        subject = t.get("subject", "").strip()
-        if subject:
-            groups[subject].append(t)
-
-    # Process duplicates
-    for subject, tickets in groups.items():
-        if len(tickets) < 2:
-            continue
-        print(f"\nMerging duplicates for subject: {subject}")
-
-        # Sort oldest first
-        tickets.sort(key=lambda x: x["created_at"])
-        primary = tickets[0]
-        duplicates = tickets[1:]
-
-        for dup in duplicates:
-            process_ticket_merge(primary["id"], dup["id"])
-Update merge logic for solved tickets
+      - name: Run merge bot
+        env:
+          SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
+          EMAIL: ${{ secrets.EMAIL }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+        run: python merge_bot.py
