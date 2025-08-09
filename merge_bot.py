@@ -37,14 +37,28 @@ log(f"✅ Using BASE_URL: {BASE_URL}")
 
 def get_all_side_convo_tickets():
     tickets = []
-    url = f"{BASE_URL}/search.json?query=type:ticket via:side_conversation"
+    # Basic query to get all tickets (or narrow with other filters if needed)
+    url = f"{BASE_URL}/search.json?query=type:ticket"
+
     while url:
         resp = requests.get(url, auth=AUTH)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            log(f"❌ API error {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
+
         data = resp.json()
-        tickets.extend(data["results"])
+
+        # Filter locally for tickets with side conversation source
+        side_convo_tickets = [
+            t for t in data.get("results", [])
+            if t.get("via", {}).get("channel") == "side_conversation"
+        ]
+        tickets.extend(side_convo_tickets)
+
+        # Move to next page if exists
         url = data.get("next_page")
-    log(f"Found {len(tickets)} side conversation tickets.")
+        log(f"Fetched {len(side_convo_tickets)} side convo tickets (Total so far: {len(tickets)})")
+
     return tickets
 
 def reopen_ticket(ticket_id):
