@@ -77,3 +77,7 @@ def merge_child_tickets():
 
 if __name__ == "__main__":
     merge_child_tickets()
+    
+if not SUBDOMAIN or not EMAIL or not API_TOKEN:
+    log(f"❌ Invalid secrets: SUBDOMAIN='{SUBDOMAIN}', EMAIL='{EMAIL}', API_TOKEN length={len(API_TOKEN)}")
+    raise SystemExit("Missing or invalid environment variables")
