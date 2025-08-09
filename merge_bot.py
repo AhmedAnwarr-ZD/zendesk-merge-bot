@@ -1,7 +1,7 @@
 import requests
 from collections import defaultdict
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 
 # Load credentials from GitHub Actions secrets
@@ -35,14 +35,9 @@ AUTH = (f"{EMAIL}/token", API_TOKEN)
 
 log(f"✅ Using BASE_URL: {BASE_URL}")
 
-from datetime import datetime, timedelta
-
-def get_all_side_convo_tickets():
+def get_side_convo_tickets_for_day(date_str):
     tickets = []
-
-    seven_days_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
-
-    url = f"{BASE_URL}/search.json?query=type:ticket created>{seven_days_ago}"
+    url = f"{BASE_URL}/search.json?query=type:ticket created:{date_str}"
 
     while url:
         resp = requests.get(url, auth=AUTH)
@@ -51,7 +46,6 @@ def get_all_side_convo_tickets():
             resp.raise_for_status()
 
         data = resp.json()
-
         side_convo_tickets = [
             t for t in data.get("results", [])
             if t.get("via", {}).get("channel") == "side_conversation"
@@ -59,8 +53,21 @@ def get_all_side_convo_tickets():
         tickets.extend(side_convo_tickets)
 
         url = data.get("next_page")
-        log(f"Fetched {len(side_convo_tickets)} side convo tickets (Total so far: {len(tickets)})")
+        log(f"Fetched {len(side_convo_tickets)} side convo tickets for {date_str} (Total so far: {len(tickets)})")
 
+    return tickets
+
+def get_all_side_convo_tickets():
+    tickets = []
+    today = datetime.utcnow().date()
+
+    for i in range(7):
+        day = today - timedelta(days=i)
+        date_str = day.isoformat()  # YYYY-MM-DD
+        day_tickets = get_side_convo_tickets_for_day(date_str)
+        tickets.extend(day_tickets)
+
+    log(f"Total side conversation tickets fetched for last 7 days: {len(tickets)}")
     return tickets
 
 def reopen_ticket(ticket_id):
