@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta
 import sys
 
-# Load credentials from GitHub Actions secrets
+# Load credentials from environment variables
 SUBDOMAIN = os.environ.get("SUBDOMAIN", "").strip()
 EMAIL = os.environ.get("EMAIL", "").strip()
 API_TOKEN = os.environ.get("API_TOKEN", "").strip()
@@ -13,7 +13,7 @@ def log(msg):
     """Print logs with a timestamp."""
     print(f"[{datetime.utcnow().isoformat()} UTC] {msg}")
 
-# Validate and debug print
+# Validate environment variables
 missing = []
 if not SUBDOMAIN:
     missing.append("SUBDOMAIN")
@@ -35,9 +35,13 @@ AUTH = (f"{EMAIL}/token", API_TOKEN)
 
 log(f"✅ Using BASE_URL: {BASE_URL}")
 
-def get_side_convo_tickets_for_day(date_str):
+def get_all_side_convo_tickets():
     tickets = []
-    url = f"{BASE_URL}/search.json?query=type:ticket created:{date_str}"
+
+    # Yesterday's date in YYYY-MM-DD format
+    yesterday = (datetime.utcnow().date() - timedelta(days=1)).isoformat()
+
+    url = f"{BASE_URL}/search.json?query=type:ticket created:{yesterday}"
 
     while url:
         resp = requests.get(url, auth=AUTH)
@@ -46,6 +50,7 @@ def get_side_convo_tickets_for_day(date_str):
             resp.raise_for_status()
 
         data = resp.json()
+
         side_convo_tickets = [
             t for t in data.get("results", [])
             if t.get("via", {}).get("channel") == "side_conversation"
@@ -53,21 +58,8 @@ def get_side_convo_tickets_for_day(date_str):
         tickets.extend(side_convo_tickets)
 
         url = data.get("next_page")
-        log(f"Fetched {len(side_convo_tickets)} side convo tickets for {date_str} (Total so far: {len(tickets)})")
+        log(f"Fetched {len(side_convo_tickets)} side convo tickets for {yesterday} (Total so far: {len(tickets)})")
 
-    return tickets
-
-def get_all_side_convo_tickets():
-    tickets = []
-    today = datetime.utcnow().date()
-
-    for i in range(7):
-        day = today - timedelta(days=i)
-        date_str = day.isoformat()  # YYYY-MM-DD
-        day_tickets = get_side_convo_tickets_for_day(date_str)
-        tickets.extend(day_tickets)
-
-    log(f"Total side conversation tickets fetched for last 7 days: {len(tickets)}")
     return tickets
 
 def reopen_ticket(ticket_id):
@@ -95,7 +87,7 @@ def add_private_note_to_ticket(ticket_id, note):
 def merge_child_tickets():
     tickets = get_all_side_convo_tickets()
 
-    # Group by subject
+    # Group tickets by subject
     grouped = defaultdict(list)
     for t in tickets:
         grouped[t["subject"]].append(t)
