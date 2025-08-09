@@ -2,18 +2,38 @@ import requests
 from collections import defaultdict
 import os
 from datetime import datetime
+import sys
 
 # Load credentials from GitHub Actions secrets
-SUBDOMAIN = os.environ["SUBDOMAIN"]
-EMAIL = os.environ["EMAIL"]
-API_TOKEN = os.environ["API_TOKEN"]
-
-BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
-AUTH = (f"{EMAIL}/token", API_TOKEN)
+SUBDOMAIN = os.environ.get("SUBDOMAIN", "").strip()
+EMAIL = os.environ.get("EMAIL", "").strip()
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
 
 def log(msg):
     """Print logs with a timestamp."""
     print(f"[{datetime.utcnow().isoformat()} UTC] {msg}")
+
+# Validate and debug print
+missing = []
+if not SUBDOMAIN:
+    missing.append("SUBDOMAIN")
+if not EMAIL:
+    missing.append("EMAIL")
+if not API_TOKEN:
+    missing.append("API_TOKEN")
+
+log(f"🔍 Debug: SUBDOMAIN='{SUBDOMAIN}'")
+log(f"🔍 Debug: EMAIL='{EMAIL}'")
+log(f"🔍 Debug: API_TOKEN length={len(API_TOKEN)}")
+
+if missing:
+    log(f"❌ Missing required environment variables: {', '.join(missing)}")
+    sys.exit(1)
+
+BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
+AUTH = (f"{EMAIL}/token", API_TOKEN)
+
+log(f"✅ Using BASE_URL: {BASE_URL}")
 
 def get_all_side_convo_tickets():
     tickets = []
@@ -77,7 +97,3 @@ def merge_child_tickets():
 
 if __name__ == "__main__":
     merge_child_tickets()
-    
-if not SUBDOMAIN or not EMAIL or not API_TOKEN:
-    log(f"❌ Invalid secrets: SUBDOMAIN='{SUBDOMAIN}', EMAIL='{EMAIL}', API_TOKEN length={len(API_TOKEN)}")
-    raise SystemExit("Missing or invalid environment variables")
