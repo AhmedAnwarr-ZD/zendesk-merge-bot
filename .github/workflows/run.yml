@@ -1,0 +1,33 @@
+name: Run Zendesk Merge Bot
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # runs every day at midnight UTC
+  workflow_dispatch: # allows manual run
+
+jobs:
+  merge-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run script
+        run: import os
+
+            SUBDOMAIN = os.getenv("SUBDOMAIN")
+            EMAIL = os.getenv("EMAIL")
+            API_TOKEN = os.getenv("API_TOKEN")
+
+        env:
+          SUBDOMAIN: ${{ secrets.ZENDESK_SUBDOMAIN }}
+          EMAIL: ${{ secrets.ZENDESK_EMAIL }}
+          API_TOKEN: ${{ secrets.ZENDESK_API_TOKEN }}
