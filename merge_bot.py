@@ -31,20 +31,21 @@ def main():
     query = 'type:ticket status<solved created>24hours'
     tickets = search_tickets(query)
 
-    # Group by requester, subject, and channel (safe handling if subject is None)
     tickets_by_group = defaultdict(list)
+    excluded_channels = {"whatsapp", "any_channel"}  # Exclude WhatsApp and integrated IG/TikTok
+
     for t in tickets:
+        channel = t.get("via", {}).get("channel", "unknown").lower()
+        if channel in excluded_channels:
+            continue  # Skip excluded channels
         subject = (t.get("subject") or "").strip().lower()
-        channel = t.get("via", {}).get("channel", "unknown")
         tickets_by_group[(t["requester_id"], subject, channel)].append(t)
 
     for (requester_id, subject, channel), t_list in tickets_by_group.items():
         if len(t_list) > 1:
-            # Sort by creation date so oldest is target
             t_list.sort(key=lambda x: x["created_at"])
             target_ticket = t_list[0]
 
-            # Skip if target ticket is closed or archived
             if target_ticket.get("status") in ["closed", "archived"]:
                 print(f"⚠ Skipping requester {requester_id}: Target ticket {target_ticket['id']} is {target_ticket['status']}")
                 continue
@@ -59,7 +60,6 @@ def main():
                 else:
                     print(f"    ❌ Failed to merge Ticket {ticket['id']} ({ticket_url(ticket['id'])}) | Channel: {ticket['via']['channel']} → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
         else:
-            # No duplicates found in this group
             print(f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
 
 if __name__ == "__main__":
