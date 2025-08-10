@@ -1,0 +1,23 @@
+name: Add Shopify Note from Zendesk
+on:
+  repository_dispatch:
+    types: [shopify_order_note]
+
+jobs:
+  update-order:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Script
+        run: |
+          python script.py
+        env:
+          ORDER_NUMBER: ${{ github.event.client_payload.order_number }}
+          TICKET_ID: ${{ github.event.client_payload.ticket_id }}
+          SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
+          EMAIL: ${{ secrets.EMAIL }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          SHOPIFY_DOMAIN: shopaleena.myshopify.com
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
