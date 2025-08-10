@@ -31,11 +31,12 @@ def main():
     query = 'type:ticket status<solved created>24hours'
     tickets = search_tickets(query)
 
-    # Group by requester, subject, and channel
+    # Group by requester, subject, and channel (safe handling if subject is None)
     tickets_by_group = defaultdict(list)
     for t in tickets:
-        key = (t["requester_id"], t["subject"].strip().lower(), t["via"]["channel"])
-        tickets_by_group[key].append(t)
+        subject = (t.get("subject") or "").strip().lower()
+        channel = t.get("via", {}).get("channel", "unknown")
+        tickets_by_group[(t["requester_id"], subject, channel)].append(t)
 
     for (requester_id, subject, channel), t_list in tickets_by_group.items():
         if len(t_list) > 1:
@@ -43,7 +44,12 @@ def main():
             t_list.sort(key=lambda x: x["created_at"])
             target_ticket = t_list[0]
 
-            print(f"\nRequester: {requester_id} | Subject: '{subject}' | Channel: {channel}")
+            # Skip if target ticket is closed or archived
+            if target_ticket.get("status") in ["closed", "archived"]:
+                print(f"⚠ Skipping requester {requester_id}: Target ticket {target_ticket['id']} is {target_ticket['status']}")
+                continue
+
+            print(f"\nRequester: {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
             print(f"  Target Ticket: {target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {target_ticket['via']['channel']}")
 
             for ticket in t_list[1:]:
