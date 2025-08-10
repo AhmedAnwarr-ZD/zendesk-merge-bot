@@ -39,9 +39,9 @@ def get_requester_org_domains(requester_id):
         org_resp = requests.get(org_url, auth=AUTH)
         org_resp.raise_for_status()
         organization = org_resp.json()["organization"]
-        # org domains is a comma separated string in 'domain_names' field
-        domains_str = organization.get("domain_names", "")
-        org_domains = [d.strip().lower() for d in domains_str.split(",") if d.strip()]
+        # 'domain_names' is a list, not a string
+        domains_list = organization.get("domain_names", [])
+        org_domains = [d.strip().lower() for d in domains_list if d.strip()]
     org_cache[requester_id] = org_domains
     return org_domains
 
