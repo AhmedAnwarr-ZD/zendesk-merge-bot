@@ -1,60 +1,16 @@
-import requests
+import logging
 from collections import defaultdict
-import os
 
-SUBDOMAIN = os.environ["SUBDOMAIN"]
-EMAIL = os.environ["EMAIL"]
-API_TOKEN = os.environ["API_TOKEN"]
-
-BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
-AUTH = (f"{EMAIL}/token", API_TOKEN)
-
-ORG_DOMAIN_TO_EXCLUDE = "mc.gov.sa"
-
-def ticket_url(ticket_id):
-    return f"https://{SUBDOMAIN}.zendesk.com/agent/tickets/{ticket_id}"
-
-def search_tickets(query):
-    url = f"{BASE_URL}/search.json?query={query}"
-    response = requests.get(url, auth=AUTH)
-    response.raise_for_status()
-    return response.json()["results"]
-
-# Cache organization data per requester_id to reduce API calls
-org_cache = {}
-
-def get_requester_org_domains(requester_id):
-    if requester_id in org_cache:
-        return org_cache[requester_id]
-
-    url = f"{BASE_URL}/users/{requester_id}.json"
-    response = requests.get(url, auth=AUTH)
-    response.raise_for_status()
-    user = response.json()["user"]
-
-    org_domains = []
-    org_id = user.get("organization_id")
-    if org_id:
-        org_url = f"{BASE_URL}/organizations/{org_id}.json"
-        org_resp = requests.get(org_url, auth=AUTH)
-        org_resp.raise_for_status()
-        organization = org_resp.json()["organization"]
-        # 'domain_names' is a list, not a string
-        domains_list = organization.get("domain_names", [])
-        org_domains = [d.strip().lower() for d in domains_list if d.strip()]
-    org_cache[requester_id] = org_domains
-    return org_domains
-
-def merge_tickets(source_id, target_id):
-    url = f"{BASE_URL}/tickets/{target_id}/merge.json"
-    data = {"ids": [source_id]}
-    response = requests.post(url, json=data, auth=AUTH)
-    response.raise_for_status()
-    return response.status_code == 200
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 def main():
     query = 'type:ticket status<solved created>24hours'
     tickets = search_tickets(query)
+    logging.info(f"Fetched {len(tickets)} tickets with query: {query}")
 
     tickets_by_group = defaultdict(list)
     excluded_channels = {"whatsapp", "any_channel"}
@@ -62,26 +18,26 @@ def main():
     for t in tickets:
         channel = t.get("via", {}).get("channel", "unknown").lower()
         if channel in excluded_channels:
+            logging.debug(f"Excluded channel '{channel}' for ticket {t['id']}")
             continue
 
         requester_id = t["requester_id"]
         org_domains = get_requester_org_domains(requester_id)
-        # Skip if org domain matches mc.gov.sa
+
         if ORG_DOMAIN_TO_EXCLUDE in org_domains:
-            print(f"⏭ Skipping ticket {t['id']} from requester {requester_id} - Organization domain '{ORG_DOMAIN_TO_EXCLUDE}' excluded")
+            logging.info(f"⏭ Skipping ticket {t['id']} from requester {requester_id} - Organization domain '{ORG_DOMAIN_TO_EXCLUDE}' excluded")
             continue
 
         subject = (t.get("subject") or "").strip().lower()
 
         # Grouping logic based on channel type
         if channel == "side_conversation":
-            # Group only by subject
             key = (subject,)
         else:
-            # Group by requester, subject, channel
             key = (requester_id, subject, channel)
 
         tickets_by_group[key].append(t)
+        logging.debug(f"Added ticket {t['id']} to group {key}")
 
     for key, t_list in tickets_by_group.items():
         if len(t_list) > 1:
@@ -89,29 +45,28 @@ def main():
             target_ticket = t_list[0]
 
             if target_ticket.get("status") in ["closed", "archived"]:
-                print(f"⚠ Skipping target ticket {target_ticket['id']} because it is {target_ticket['status']}")
+                logging.warning(f"⚠ Skipping target ticket {target_ticket['id']} because it is {target_ticket['status']}")
                 continue
 
             if channel == "side_conversation":
-                # key is tuple with one element: (subject,)
                 subject = key[0]
-                print(f"\nSubject: '{subject or '[No Subject]'}' | Channel: side_conversation")
+                logging.info(f"\nSubject: '{subject or '[No Subject]'}' | Channel: side_conversation")
             else:
                 requester_id, subject, channel = key
-                print(f"\nRequester: {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
+                logging.info(f"\nRequester: {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
 
-            print(f"  Target Ticket: {target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {target_ticket['via']['channel']}")
+            logging.info(f"Target Ticket: {target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {target_ticket['via']['channel']}")
 
             for ticket in t_list[1:]:
                 merged = merge_tickets(ticket["id"], target_ticket["id"])
                 if merged:
-                    print(f"    ✅ Merged Ticket {ticket['id']} ({ticket_url(ticket['id'])}) | Channel: {ticket['via']['channel']} → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
+                    logging.info(f"✅ Merged Ticket {ticket['id']} ({ticket_url(ticket['id'])}) → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
                 else:
-                    print(f"    ❌ Failed to merge Ticket {ticket['id']} ({ticket_url(ticket['id'])}) | Channel: {ticket['via']['channel']} → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
+                    logging.error(f"❌ Failed to merge Ticket {ticket['id']} ({ticket_url(ticket['id'])}) → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
         else:
             if channel == "side_conversation":
                 subject = key[0]
-                print(f"ℹ No duplicates for side_conversation | Subject: '{subject or '[No Subject]'}'")
+                logging.info(f"ℹ No duplicates for side_conversation | Subject: '{subject or '[No Subject]'}'")
             else:
                 requester_id, subject, channel = key
-                print(f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
+                logging.info(f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
