@@ -1,5 +1,6 @@
 import logging
 from collections import defaultdict
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +26,10 @@ def main():
         org_domains = get_requester_org_domains(requester_id)
 
         if ORG_DOMAIN_TO_EXCLUDE in org_domains:
-            logging.info(f"⏭ Skipping ticket {t['id']} from requester {requester_id} - Organization domain '{ORG_DOMAIN_TO_EXCLUDE}' excluded")
+            logging.info(
+                f"⏭ Skipping ticket {t['id']} from requester {requester_id} - "
+                f"Organization domain '{ORG_DOMAIN_TO_EXCLUDE}' excluded"
+            )
             continue
 
         subject = (t.get("subject") or "").strip().lower()
@@ -40,33 +44,68 @@ def main():
         logging.debug(f"Added ticket {t['id']} to group {key}")
 
     for key, t_list in tickets_by_group.items():
-        if len(t_list) > 1:
-            t_list.sort(key=lambda x: x["created_at"])
-            target_ticket = t_list[0]
+        is_side_conversation = (len(key) == 1)
 
-            if target_ticket.get("status") in ["closed", "archived"]:
-                logging.warning(f"⚠ Skipping target ticket {target_ticket['id']} because it is {target_ticket['status']}")
+        if len(t_list) > 1:
+            # Sort by created_at; fallback to string sort if format is invalid
+            def _created_at_str(x):
+                return x.get("created_at", "")
+
+            try:
+                t_list.sort(
+                    key=lambda x: datetime.fromisoformat(
+                        x.get("created_at", "").replace("Z", "+00:00")
+                    )
+                )
+            except Exception:
+                t_list.sort(key=_created_at_str)
+
+            target_ticket = t_list[0]
+            target_status = (target_ticket.get("status") or "").lower()
+
+            if target_status in ["closed", "archived"]:
+                logging.warning(
+                    f"⚠ Skipping target ticket {target_ticket['id']} because it is {target_status}"
+                )
                 continue
 
-            if channel == "side_conversation":
+            if is_side_conversation:
                 subject = key[0]
-                logging.info(f"\nSubject: '{subject or '[No Subject]'}' | Channel: side_conversation")
+                logging.info(
+                    f"\nSubject: '{subject or '[No Subject]'}' | Channel: side_conversation"
+                )
             else:
-                requester_id, subject, channel = key
-                logging.info(f"\nRequester: {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
+                requester_id, subject, group_channel = key
+                logging.info(
+                    f"\nRequester: {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {group_channel}"
+                )
 
-            logging.info(f"Target Ticket: {target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {target_ticket['via']['channel']}")
+            target_channel = target_ticket.get("via", {}).get("channel", "unknown")
+            logging.info(
+                f"Target Ticket: {target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {target_channel}"
+            )
 
             for ticket in t_list[1:]:
                 merged = merge_tickets(ticket["id"], target_ticket["id"])
+                ticket_channel = ticket.get("via", {}).get("channel", "unknown")
                 if merged:
-                    logging.info(f"✅ Merged Ticket {ticket['id']} ({ticket_url(ticket['id'])}) → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
+                    logging.info(
+                        f"✅ Merged Ticket {ticket['id']} ({ticket_url(ticket['id'])}) → "
+                        f"{target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {ticket_channel}"
+                    )
                 else:
-                    logging.error(f"❌ Failed to merge Ticket {ticket['id']} ({ticket_url(ticket['id'])}) → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
+                    logging.error(
+                        f"❌ Failed to merge Ticket {ticket['id']} ({ticket_url(ticket['id'])}) → "
+                        f"{target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {ticket_channel}"
+                    )
         else:
-            if channel == "side_conversation":
+            if is_side_conversation:
                 subject = key[0]
-                logging.info(f"ℹ No duplicates for side_conversation | Subject: '{subject or '[No Subject]'}'")
+                logging.info(
+                    f"ℹ No duplicates for side_conversation | Subject: '{subject or '[No Subject]'}'"
+                )
             else:
-                requester_id, subject, channel = key
-                logging.info(f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
+                requester_id, subject, group_channel = key
+                logging.info(
+                    f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {group_channel}"
+                )
