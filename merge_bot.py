@@ -1,118 +1,96 @@
+import time
 import requests
-from collections import defaultdict
-import os
-from datetime import datetime, timedelta
-import sys
+from urllib.parse import urlencode
 
-# Load credentials from environment variables
-SUBDOMAIN = os.environ.get("SUBDOMAIN", "").strip()
-EMAIL = os.environ.get("EMAIL", "").strip()
-API_TOKEN = os.environ.get("API_TOKEN", "").strip()
+SESSION = requests.Session()
+SESSION.headers.update({"User-Agent": "ahead/zendesk-merge-bot", "Accept": "application/json"})
 
-def log(msg):
-    """Print logs with a timestamp."""
-    print(f"[{datetime.utcnow().isoformat()} UTC] {msg}")
+def _sleep_from_headers(resp, default=5):
+    ra = resp.headers.get("Retry-After")
+    if ra and ra.isdigit():
+        time.sleep(int(ra))
+        return
+    reset = resp.headers.get("ratelimit-reset")  # some endpoints use this
+    if reset:
+        # reset is an absolute epoch time in some APIs; fall back to default if parse fails
+        try:
+            wait = max(0, int(reset) - int(time.time()))
+            time.sleep(wait or default)
+            return
+        except Exception:
+            pass
+    time.sleep(default)
 
-# Validate environment variables
-missing = []
-if not SUBDOMAIN:
-    missing.append("SUBDOMAIN")
-if not EMAIL:
-    missing.append("EMAIL")
-if not API_TOKEN:
-    missing.append("API_TOKEN")
+def _request(method, url, **kw):
+    while True:
+        resp = SESSION.request(method, url, auth=AUTH, timeout=30, **kw)
+        if resp.status_code in (429, 503):
+            _sleep_from_headers(resp, default=5)
+            continue
+        resp.raise_for_status()
+        return resp
 
-log(f"🔍 Debug: SUBDOMAIN='{SUBDOMAIN}'")
-log(f"🔍 Debug: EMAIL='{EMAIL}'")
-log(f"🔍 Debug: API_TOKEN length={len(API_TOKEN)}")
+def get_pages(url, per_page_pause_sec=7):  # ≤ ~8–9 calls/min for incremental exports
+    while url:
+        resp = _request("GET", url)
+        data = resp.json()
+        yield data
+        url = data.get("next_page")
+        if url:
+            time.sleep(per_page_pause_sec)  # keep under incremental rate limit
 
-if missing:
-    log(f"❌ Missing required environment variables: {', '.join(missing)}")
-    sys.exit(1)
-
-BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
-AUTH = (f"{EMAIL}/token", API_TOKEN)
-
-log(f"✅ Using BASE_URL: {BASE_URL}")
+def update_many_status(ids, status):
+    # batch by 100
+    for i in range(0, len(ids), 100):
+        batch = ids[i:i+100]
+        q = urlencode({"ids": ",".join(map(str, batch))})
+        _request("PUT", f"{BASE_URL}/tickets/update_many.json?{q}",
+                 json={"ticket": {"status": status}})
 
 def get_all_side_convo_tickets():
-    tickets = []
-    now = datetime.utcnow()
-    start_time = int((now - timedelta(days=1)).timestamp())  # 24 hours ago unix timestamp
-
+    tickets, now = [], datetime.utcnow()
+    start_time = int((now - timedelta(days=1)).timestamp())
     url = f"{BASE_URL}/incremental/tickets.json?start_time={start_time}"
-
-    while url:
-        resp = requests.get(url, auth=AUTH)
-        if resp.status_code != 200:
-            log(f"❌ API error {resp.status_code}: {resp.text}")
-            resp.raise_for_status()
-
-        data = resp.json()
-
-        # Filter tickets updated in last 24h, status < solved, and side conversation
+    for data in get_pages(url):
         side_convo_tickets = [
             t for t in data.get("tickets", [])
             if t.get("via", {}).get("channel") == "side_conversation"
-            and t.get("status") in ("new", "open", "pending")
-            and datetime.strptime(t.get("updated_at"), "%Y-%m-%dT%H:%M:%SZ") >= now - timedelta(days=1)
+            and t.get("status") in ("new", "open", "pending", "solved")  # include solved for reopen/solve flow
+            and datetime.strptime(t["updated_at"], "%Y-%m-%dT%H:%M:%SZ") >= now - timedelta(days=1)
         ]
-
         tickets.extend(side_convo_tickets)
-
-        url = data.get("next_page")
-        log(f"Fetched {len(side_convo_tickets)} side convo tickets with status < solved (Total so far: {len(tickets)})")
-
-    log(f"Total side conversation tickets fetched for last 24 hours with status < solved: {len(tickets)}")
+        log(f"Fetched {len(side_convo_tickets)} (Total: {len(tickets)})")
+    log(f"Total in last 24h: {len(tickets)}")
     return tickets
 
-def reopen_ticket(ticket_id):
-    log(f"Reopening solved ticket {ticket_id}")
-    payload = {"ticket": {"status": "open"}}
-    requests.put(f"{BASE_URL}/tickets/{ticket_id}.json", json=payload, auth=AUTH).raise_for_status()
-
-def solve_ticket(ticket_id):
-    log(f"Solving ticket {ticket_id}")
-    payload = {"ticket": {"status": "solved"}}
-    requests.put(f"{BASE_URL}/tickets/{ticket_id}.json", json=payload, auth=AUTH).raise_for_status()
-
 def add_private_note_to_ticket(ticket_id, note):
-    log(f"Adding private note to ticket {ticket_id}")
-    payload = {
-        "ticket": {
-            "comment": {
-                "body": note,
-                "public": False
-            }
-        }
-    }
-    requests.put(f"{BASE_URL}/tickets/{ticket_id}.json", json=payload, auth=AUTH).raise_for_status()
+    _request("PUT", f"{BASE_URL}/tickets/{ticket_id}.json",
+             json={"ticket": {"comment": {"body": note, "public": False}}})
+
+def reopen_ticket(ticket_id):
+    _request("PUT", f"{BASE_URL}/tickets/{ticket_id}.json", json={"ticket": {"status": "open"}})
 
 def merge_child_tickets():
     tickets = get_all_side_convo_tickets()
-
-    # Group tickets by subject
     grouped = defaultdict(list)
     for t in tickets:
         grouped[t["subject"]].append(t)
 
     for subject, ticket_list in grouped.items():
         if len(ticket_list) < 2:
-            continue  # no duplicates to merge
-
+            continue
         ticket_list.sort(key=lambda x: x["created_at"])
-        main_ticket = ticket_list[0]
-        duplicates = ticket_list[1:]
+        main_ticket, duplicates = ticket_list[0], ticket_list[1:]
+        log(f"Merging {len(duplicates)} into main {main_ticket['id']} for subject: {subject}")
 
-        log(f"Merging {len(duplicates)} child tickets into main ticket {main_ticket['id']} for subject: {subject}")
+        # Reopen solved dups in one batch (if any), then immediately re-solve all in one batch
+        solved_dup_ids = [d["id"] for d in duplicates if d["status"] == "solved"]
+        if solved_dup_ids:
+            update_many_status(solved_dup_ids, "open")
 
-        for dup in duplicates:
-            if dup["status"] == "solved":
-                reopen_ticket(dup["id"])
+        # Single comment on the main ticket (kept as single PUT; update_many doesn't do comments)
+        note_lines = [f"Merged from ticket {d['id']}:\n\n{d.get('description','')}" for d in duplicates]
+        add_private_note_to_ticket(main_ticket["id"], "\n\n---\n\n".join(note_lines))
 
-            add_private_note_to_ticket(main_ticket["id"], f"Merged from ticket {dup['id']}:\n\n{dup['description']}")
-
-            solve_ticket(dup["id"])
-
-if __name__ == "__main__":
-    merge_child_tickets()
+        # Solve all dups in batches
+        update_many_status([d["id"] for d in duplicates], "solved")
