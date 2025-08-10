@@ -4,9 +4,9 @@ import requests
 # Env vars
 order_number = os.getenv("ORDER_NUMBER")
 ticket_id = os.getenv("TICKET_ID")
-zendesk_subdomain = os.getenv("SUBDOMAIN")
-zendesk_email = os.getenv("EMAIL")
-zendesk_token = os.getenv("TOKEN")
+zendesk_subdomain = os.getenv("ZENDESK_SUBDOMAIN")
+zendesk_email = os.getenv("ZENDESK_EMAIL")
+zendesk_token = os.getenv("ZENDESK_TOKEN")
 shopify_domain = os.getenv("SHOPIFY_DOMAIN")
 shopify_token = os.getenv("SHOPIFY_TOKEN")
 
