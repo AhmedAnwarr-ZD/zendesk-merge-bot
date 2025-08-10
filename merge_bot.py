@@ -72,18 +72,34 @@ def main():
             continue
 
         subject = (t.get("subject") or "").strip().lower()
-        tickets_by_group[(requester_id, subject, channel)].append(t)
 
-    for (requester_id, subject, channel), t_list in tickets_by_group.items():
+        # Grouping logic based on channel type
+        if channel == "side_conversation":
+            # Group only by subject
+            key = (subject,)
+        else:
+            # Group by requester, subject, channel
+            key = (requester_id, subject, channel)
+
+        tickets_by_group[key].append(t)
+
+    for key, t_list in tickets_by_group.items():
         if len(t_list) > 1:
             t_list.sort(key=lambda x: x["created_at"])
             target_ticket = t_list[0]
 
             if target_ticket.get("status") in ["closed", "archived"]:
-                print(f"⚠ Skipping requester {requester_id}: Target ticket {target_ticket['id']} is {target_ticket['status']}")
+                print(f"⚠ Skipping target ticket {target_ticket['id']} because it is {target_ticket['status']}")
                 continue
 
-            print(f"\nRequester: {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
+            if channel == "side_conversation":
+                # key is tuple with one element: (subject,)
+                subject = key[0]
+                print(f"\nSubject: '{subject or '[No Subject]'}' | Channel: side_conversation")
+            else:
+                requester_id, subject, channel = key
+                print(f"\nRequester: {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
+
             print(f"  Target Ticket: {target_ticket['id']} ({ticket_url(target_ticket['id'])}) | Channel: {target_ticket['via']['channel']}")
 
             for ticket in t_list[1:]:
@@ -93,7 +109,9 @@ def main():
                 else:
                     print(f"    ❌ Failed to merge Ticket {ticket['id']} ({ticket_url(ticket['id'])}) | Channel: {ticket['via']['channel']} → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
         else:
-            print(f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
-
-if __name__ == "__main__":
-    main()
+            if channel == "side_conversation":
+                subject = key[0]
+                print(f"ℹ No duplicates for side_conversation | Subject: '{subject or '[No Subject]'}'")
+            else:
+                requester_id, subject, channel = key
+                print(f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
