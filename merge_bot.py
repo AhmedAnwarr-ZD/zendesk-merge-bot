@@ -2,13 +2,14 @@ import requests
 from collections import defaultdict
 import os
 
-# Load credentials from GitHub Actions secrets
 SUBDOMAIN = os.environ["SUBDOMAIN"]
 EMAIL = os.environ["EMAIL"]
 API_TOKEN = os.environ["API_TOKEN"]
 
 BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
 AUTH = (f"{EMAIL}/token", API_TOKEN)
+
+ORG_DOMAIN_TO_EXCLUDE = "mc.gov.sa"
 
 def ticket_url(ticket_id):
     return f"https://{SUBDOMAIN}.zendesk.com/agent/tickets/{ticket_id}"
@@ -19,6 +20,31 @@ def search_tickets(query):
     response.raise_for_status()
     return response.json()["results"]
 
+# Cache organization data per requester_id to reduce API calls
+org_cache = {}
+
+def get_requester_org_domains(requester_id):
+    if requester_id in org_cache:
+        return org_cache[requester_id]
+
+    url = f"{BASE_URL}/users/{requester_id}.json"
+    response = requests.get(url, auth=AUTH)
+    response.raise_for_status()
+    user = response.json()["user"]
+
+    org_domains = []
+    org_id = user.get("organization_id")
+    if org_id:
+        org_url = f"{BASE_URL}/organizations/{org_id}.json"
+        org_resp = requests.get(org_url, auth=AUTH)
+        org_resp.raise_for_status()
+        organization = org_resp.json()["organization"]
+        # org domains is a comma separated string in 'domain_names' field
+        domains_str = organization.get("domain_names", "")
+        org_domains = [d.strip().lower() for d in domains_str.split(",") if d.strip()]
+    org_cache[requester_id] = org_domains
+    return org_domains
+
 def merge_tickets(source_id, target_id):
     url = f"{BASE_URL}/tickets/{target_id}/merge.json"
     data = {"ids": [source_id]}
@@ -27,19 +53,26 @@ def merge_tickets(source_id, target_id):
     return response.status_code == 200
 
 def main():
-    # Search for tickets within last 24 hours, status less than solved
     query = 'type:ticket status<solved created>24hours'
     tickets = search_tickets(query)
 
     tickets_by_group = defaultdict(list)
-    excluded_channels = {"whatsapp", "any_channel"}  # Exclude WhatsApp and integrated IG/TikTok
+    excluded_channels = {"whatsapp", "any_channel"}
 
     for t in tickets:
         channel = t.get("via", {}).get("channel", "unknown").lower()
         if channel in excluded_channels:
-            continue  # Skip excluded channels
+            continue
+
+        requester_id = t["requester_id"]
+        org_domains = get_requester_org_domains(requester_id)
+        # Skip if org domain matches mc.gov.sa
+        if ORG_DOMAIN_TO_EXCLUDE in org_domains:
+            print(f"⏭ Skipping ticket {t['id']} from requester {requester_id} - Organization domain '{ORG_DOMAIN_TO_EXCLUDE}' excluded")
+            continue
+
         subject = (t.get("subject") or "").strip().lower()
-        tickets_by_group[(t["requester_id"], subject, channel)].append(t)
+        tickets_by_group[(requester_id, subject, channel)].append(t)
 
     for (requester_id, subject, channel), t_list in tickets_by_group.items():
         if len(t_list) > 1:
