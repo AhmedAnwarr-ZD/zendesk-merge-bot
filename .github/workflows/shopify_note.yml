@@ -23,10 +23,10 @@ jobs:
         env:
           ORDER_NUMBER: ${{ github.event.client_payload.order_number }}
           TICKET_ID: ${{ github.event.client_payload.ticket_id }}
-          ZENDESK_SUBDOMAIN: your_zendesk_subdomain
-          ZENDESK_EMAIL: your_zendesk_email
-          ZENDESK_TOKEN: ${{ secrets.ZENDESK_TOKEN }}
-          SHOPIFY_DOMAIN: yourshop.myshopify.com
+          ZENDESK_SUBDOMAIN: shopaleena
+          ZENDESK_EMAIL: aanwar@tgc-ksa.com
+          ZENDESK_TOKEN: ${{ secrets.TOKEN }}
+          SHOPIFY_DOMAIN: shopaleena.myshopify.com
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
         run: |
           python <<'EOF'
@@ -35,9 +35,9 @@ jobs:
 
           order_number = os.getenv("ORDER_NUMBER")
           ticket_id = os.getenv("TICKET_ID")
-          zendesk_subdomain = os.getenv("SUBDOMAIN")
-          zendesk_email = os.getenv("EMAIL")
-          zendesk_token = os.getenv("TOKEN")
+          zendesk_subdomain = os.getenv("ZENDESK_SUBDOMAIN")
+          zendesk_email = os.getenv("ZENDESK_EMAIL")
+          zendesk_token = os.getenv("ZENDESK_TOKEN")
           shopify_domain = os.getenv("SHOPIFY_DOMAIN")
           shopify_token = os.getenv("SHOPIFY_TOKEN")
 
