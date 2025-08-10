@@ -58,6 +58,9 @@ def main():
                     print(f"    ✅ Merged Ticket {ticket['id']} ({ticket_url(ticket['id'])}) | Channel: {ticket['via']['channel']} → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
                 else:
                     print(f"    ❌ Failed to merge Ticket {ticket['id']} ({ticket_url(ticket['id'])}) | Channel: {ticket['via']['channel']} → {target_ticket['id']} ({ticket_url(target_ticket['id'])})")
+        else:
+            # No duplicates found in this group
+            print(f"ℹ No duplicates for requester {requester_id} | Subject: '{subject or '[No Subject]'}' | Channel: {channel}")
 
 if __name__ == "__main__":
     main()
