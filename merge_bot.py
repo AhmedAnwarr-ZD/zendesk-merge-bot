@@ -23,7 +23,7 @@ def get_requester_org_domains(requester_id):
 
 def ticket_url(ticket_id):
     """Return a full Zendesk ticket URL"""
-    return f"https://your_subdomain.zendesk.com/agent/tickets/{ticket_id}"
+    return f"https://shopaleena.zendesk.com/agent/tickets/{ticket_id}"
 
 def merge_tickets(source_ticket_id, target_ticket_id):
     """Merge source_ticket_id into target_ticket_id"""
