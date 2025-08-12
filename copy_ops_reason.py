@@ -80,9 +80,11 @@ def set_ticket_field(ticket_id, field_id, value):
 # Reverse Lookup Logic
 # ------------------------
 def find_parent_via_reverse_lookup(child_id):
-    # Search only tickets created in the last 30 days to limit API load
     date_30_days_ago = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
-    search_url = f"{BASE_URL}/search.json?query=type:ticket created>{date_30_days_ago}"
+    search_url = (
+        f"{BASE_URL}/search.json?"
+        f"query=type:ticket custom_field_{OPS_ESCALATION_REASON_ID}:* created>{date_30_days_ago}"
+    )
     
     results = zendesk_get(search_url)
     if not results:
@@ -95,7 +97,6 @@ def find_parent_via_reverse_lookup(child_id):
                 logging.debug(f"Found parent {t['id']} for child {child_id} via reverse lookup.")
                 return t["id"]
     return None
-
 # ------------------------
 # Main Logic
 # ------------------------
