@@ -74,7 +74,7 @@ def merge_tickets(source_ticket_id, target_ticket_id):
 ORG_DOMAIN_TO_EXCLUDE = "moc.gov.sa"
 
 def main():
-    query = 'type:ticket status<solved created>10minutes'
+    query = 'type:ticket status<solved'
     tickets = search_tickets(query)
     logging.info(f"Fetched {len(tickets)} tickets with query: {query}")
 
