@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+from datetime import datetime, timedelta
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -76,31 +77,23 @@ def set_ticket_field(ticket_id, field_id, value):
     return zendesk_put(url, payload)
 
 # ------------------------
-# Parent Finder
+# Reverse Lookup Logic
 # ------------------------
-def find_parent_ticket_id(ticket):
-    # 1. Check side conversations
-    side_convos = get_side_conversations(ticket["id"])
-    for sc in side_convos:
-        if sc.get("ticket_id") and sc["ticket_id"] != ticket["id"]:
-            return sc["ticket_id"]
+def find_parent_via_reverse_lookup(child_id):
+    # Search only tickets created in the last 30 days to limit API load
+    date_30_days_ago = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+    search_url = f"{BASE_URL}/search.json?query=type:ticket created>{date_30_days_ago}"
+    
+    results = zendesk_get(search_url)
+    if not results:
+        return None
 
-    # 2. Check follow-up source
-    if ticket.get("via", {}).get("followup_source_id"):
-        return ticket["via"]["followup_source_id"]
-
-    # 3. Check problem/incident relationship
-    if ticket.get("problem_id"):
-        return ticket["problem_id"]
-
-    # 4. Check custom field (if you have one that stores parent ticket ID)
-    PARENT_TICKET_FIELD_ID = None  # put actual ID if exists
-    if PARENT_TICKET_FIELD_ID:
-        for field in ticket.get("custom_fields", []):
-            if field["id"] == PARENT_TICKET_FIELD_ID and field["value"]:
-                return field["value"]
-
-    # No parent found
+    for t in results.get("results", []):
+        side_convos = get_side_conversations(t["id"])
+        for sc in side_convos:
+            if sc.get("ticket_id") == child_id:
+                logging.debug(f"Found parent {t['id']} for child {child_id} via reverse lookup.")
+                return t["id"]
     return None
 
 # ------------------------
@@ -113,12 +106,10 @@ def main():
     for child_ticket in tickets:
         child_id = child_ticket["id"]
 
-        # Try to find parent ticket
-        parent_id = find_parent_ticket_id(child_ticket)
-
+        # Reverse lookup for parent
+        parent_id = find_parent_via_reverse_lookup(child_id)
         if not parent_id:
-            logging.warning(f"⚠ Ticket {child_id} — no parent found in side convos, follow-ups, or problem links.")
-            # Instead of skipping, we still try nothing here, or we could add logic to fetch from other sources
+            logging.warning(f"⚠ Ticket {child_id} — no parent found in reverse lookup.")
             continue
 
         parent_ticket = get_ticket(parent_id)
