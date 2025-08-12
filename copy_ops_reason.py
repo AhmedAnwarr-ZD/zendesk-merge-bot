@@ -18,116 +18,113 @@ API_TOKEN = os.environ["API_TOKEN"]
 BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
 AUTH = (f"{EMAIL}/token", API_TOKEN)
 
-OPS_ESCALATION_FIELD_ID = 20837946693533  # real field ID
+# Custom field ID for Ops Escalation Reason
+OPS_ESCALATION_REASON_ID = 20837946693533
 
 # ------------------------
-# API Helpers
+# API Functions
 # ------------------------
-def zendesk_get(path):
-    url = f"{BASE_URL}{path}"
+def zendesk_get(url):
+    """Generic GET request to Zendesk API"""
     resp = requests.get(url, auth=AUTH)
     if resp.status_code != 200:
-        logging.error(f"GET {path} failed ({resp.status_code}): {resp.text}")
+        logging.error(f"GET {url} failed: {resp.status_code} {resp.text}")
         return None
     return resp.json()
 
-def zendesk_put(path, payload):
-    url = f"{BASE_URL}{path}"
-    resp = requests.put(url, json=payload, auth=AUTH)
+def zendesk_put(url, data):
+    """Generic PUT request to Zendesk API"""
+    resp = requests.put(url, json=data, auth=AUTH)
     if resp.status_code != 200:
-        logging.error(f"PUT {path} failed ({resp.status_code}): {resp.text}")
+        logging.error(f"PUT {url} failed: {resp.status_code} {resp.text}")
         return False
     return True
 
-def search_unsolved_side_conversations():
-    """Find all unsolved tickets with side conversations."""
+def search_side_conversation_tickets():
+    """Find all unsolved side conversation tickets"""
     query = 'type:ticket status<solved'
-    tickets = []
-    page = f"/search.json?query={query}"
-    while page:
-        data = zendesk_get(page)
+    url = f"{BASE_URL}/search.json?query={query}"
+    results = []
+    while url:
+        data = zendesk_get(url)
         if not data:
             break
         for t in data.get("results", []):
-            if t.get("status") in ["new", "open", "pending"]:
-                tickets.append(t)
-        page = data.get("next_page")
-        if page:
-            page = page.replace(BASE_URL, "")
-    return tickets
-
-def get_ops_reason_from_ticket(ticket_id):
-    """Return Ops Escalation Reason from ticket's custom fields."""
-    data = zendesk_get(f"/tickets/{ticket_id}.json")
-    if not data:
-        return None
-    for f in data["ticket"].get("custom_fields", []):
-        if f["id"] == OPS_ESCALATION_FIELD_ID and f["value"]:
-            return f["value"]
-    return None
+            if t.get("via", {}).get("channel") == "side_conversation":
+                results.append(t)
+        url = data.get("next_page")
+    return results
 
 def get_side_conversations(ticket_id):
-    """Return all side conversations for a ticket."""
-    data = zendesk_get(f"/tickets/{ticket_id}/side_conversations.json")
+    """Get side conversations for a ticket"""
+    url = f"{BASE_URL}/tickets/{ticket_id}/side_conversations.json"
+    data = zendesk_get(url)
     if not data:
         return []
     return data.get("side_conversations", [])
 
-def get_side_conversation_messages(conv_id):
-    """Return all messages from a side conversation."""
-    data = zendesk_get(f"/side_conversations/{conv_id}/messages.json")
+def get_ticket_field(ticket_id, field_id):
+    """Fetch specific custom field value from a ticket"""
+    url = f"{BASE_URL}/tickets/{ticket_id}.json"
+    data = zendesk_get(url)
     if not data:
-        return []
-    return data.get("events", [])
+        return None
+    for field in data["ticket"].get("custom_fields", []):
+        if field["id"] == field_id:
+            return field.get("value")
+    return None
 
-def update_side_conversation(conv_id, message):
-    """Add a message to the side conversation."""
+def set_ticket_field(ticket_id, field_id, value):
+    """Update specific custom field value on a ticket"""
+    url = f"{BASE_URL}/tickets/{ticket_id}.json"
     payload = {
-        "event": {
-            "type": "message",
-            "body": message
+        "ticket": {
+            "custom_fields": [
+                {"id": field_id, "value": value}
+            ]
         }
     }
-    return zendesk_put(f"/side_conversations/{conv_id}/messages.json", payload)
+    return zendesk_put(url, payload)
 
 # ------------------------
-# Main Logic
+# Main logic
 # ------------------------
 def main():
-    tickets = search_unsolved_side_conversations()
-    logging.info(f"Found {len(tickets)} unsolved tickets.")
+    tickets = search_side_conversation_tickets()
+    logging.info(f"Found {len(tickets)} unsolved side conversation tickets.")
 
-    for t in tickets:
-        parent_id = t.get("via", {}).get("followup_source_id")
-        if not parent_id:
-            logging.debug(f"Skipping ticket {t['id']} — no parent ticket.")
+    for child_ticket in tickets:
+        child_id = child_ticket["id"]
+
+        # Check current Ops Escalation Reason in child
+        child_value = get_ticket_field(child_id, OPS_ESCALATION_REASON_ID)
+        if child_value:
+            logging.debug(f"Skipping ticket {child_id} — already has Ops Escalation Reason.")
             continue
 
-        ops_reason = get_ops_reason_from_ticket(parent_id)
-        if not ops_reason:
+        # Try to find the parent via side conversation API
+        side_convos = get_side_conversations(child_id)
+        parent_id = None
+        for sc in side_convos:
+            if sc.get("ticket_id") and sc["ticket_id"] != child_id:
+                parent_id = sc["ticket_id"]
+                break
+
+        if not parent_id:
+            logging.debug(f"Skipping ticket {child_id} — could not find parent from side conversation.")
+            continue
+
+        # Get Ops Escalation Reason from parent
+        parent_value = get_ticket_field(parent_id, OPS_ESCALATION_REASON_ID)
+        if not parent_value:
             logging.debug(f"Parent ticket {parent_id} has no Ops Escalation Reason.")
             continue
 
-        side_convs = get_side_conversations(t["id"])
-        if not side_convs:
-            logging.debug(f"No side conversations found for ticket {t['id']}.")
-            continue
-
-        for sc in side_convs:
-            conv_id = sc["id"]
-
-            # Fetch all messages in the conversation
-            messages = get_side_conversation_messages(conv_id)
-            body_texts = [m.get("body", "").strip().lower() for m in messages if m.get("body")]
-
-            if any("ops escalation reason" in msg for msg in body_texts):
-                logging.debug(f"Side conversation {conv_id} already has Ops Escalation Reason.")
-                continue
-
-            # Append the Ops Escalation Reason
-            message_body = f"Ops Escalation Reason: {ops_reason}"
-            if update_side_conversation(conv_id, message_body):
-                logging.info(f"✅ Added Ops Escalation Reason to side conversation {conv_id} for ticket {t['id']}.")
+        # Copy to child ticket
+        if set_ticket_field(child_id, OPS_ESCALATION_REASON_ID, parent_value):
+            logging.info(f"✅ Copied Ops Escalation Reason from parent {parent_id} → child {child_id}")
+        else:
+            logging.error(f"❌ Failed to update ticket {child_id}")
 
 if __name__ == "__main__":
     main()
