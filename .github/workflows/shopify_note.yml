@@ -25,7 +25,7 @@ jobs:
           TICKET_ID: ${{ github.event.client_payload.ticket_id }}
           ZENDESK_SUBDOMAIN: shopaleena
           ZENDESK_EMAIL: ${{ secrets.EMAIL }}
-          ZENDESK_TOKEN: ${{ secrets.TOKEN }}
+          ZENDESK_TOKEN: ${{ secrets.API_TOKEN }}
           SHOPIFY_DOMAIN: shopaleena.myshopify.com
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
         run: python script.py
