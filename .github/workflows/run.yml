@@ -28,4 +28,4 @@ jobs:
           ZENDESK_TOKEN: ${{ secrets.TOKEN }}
           ZENDESK_SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
         run: |
-          python merge_script.py
+          python merge_bot.py
