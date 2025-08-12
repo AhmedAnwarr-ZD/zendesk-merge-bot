@@ -28,4 +28,4 @@ jobs:
           ZENDESK_TOKEN: ${{ secrets.TOKEN }}
           SHOPIFY_DOMAIN: shopaleena.myshopify.com
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
-        run: python shopify_note.py
+        run: python script.py
