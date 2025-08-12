@@ -3,19 +3,24 @@ name: Ops Escalation Reason Bot
 on:
   schedule:
     - cron: "*/5 * * * *"  # Runs every 5 minutes
-  workflow_dispatch:        # Allow manual run
+  workflow_dispatch:        # Allows manual trigger from GitHub UI
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+
       - name: Install dependencies
-        run: pip install requests
+        run: pip install --no-cache-dir requests
+
       - name: Run Ops Escalation Reason Bot
         env:
           SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
