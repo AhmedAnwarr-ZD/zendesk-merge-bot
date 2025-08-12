@@ -33,7 +33,7 @@ def merge_tickets(source_ticket_id, target_ticket_id):
 # ------------------------
 # Main Merge Logic
 # ------------------------
-ORG_DOMAIN_TO_EXCLUDE = "example.com"  # Replace with your excluded domain
+ORG_DOMAIN_TO_EXCLUDE = "moc.gov.sa"  # Replace with your excluded domain
 
 def main():
     query = 'type:ticket status<solved created>10minutes'
