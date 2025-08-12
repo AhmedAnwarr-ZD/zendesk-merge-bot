@@ -50,9 +50,7 @@ def get_tickets_from_view(view_id):
 def get_side_conversations(ticket_id):
     url = f"{BASE_URL}/tickets/{ticket_id}/side_conversations.json"
     data = zendesk_get(url)
-    if not data:
-        return []
-    return data.get("side_conversations", [])
+    return data.get("side_conversations", []) if data else []
 
 def get_ticket_field(ticket, field_id):
     for field in ticket.get("custom_fields", []):
@@ -77,15 +75,16 @@ def set_ticket_field(ticket_id, field_id, value):
     return zendesk_put(url, payload)
 
 # ------------------------
-# Reverse Lookup Logic
+# Reverse Lookup using external_ids.targetTicketId
 # ------------------------
-def find_parent_via_reverse_lookup(child_id):
+def find_parent_for_child(child_id):
+    """Search for a parent ticket whose side conversation external_ids.targetTicketId matches child_id."""
     date_30_days_ago = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
     search_url = (
         f"{BASE_URL}/search.json?"
         f"query=type:ticket custom_field_{OPS_ESCALATION_REASON_ID}:* created>{date_30_days_ago}"
     )
-    
+
     results = zendesk_get(search_url)
     if not results:
         return None
@@ -93,10 +92,14 @@ def find_parent_via_reverse_lookup(child_id):
     for t in results.get("results", []):
         side_convos = get_side_conversations(t["id"])
         for sc in side_convos:
-            if sc.get("ticket_id") == child_id:
-                logging.debug(f"Found parent {t['id']} for child {child_id} via reverse lookup.")
+            external_ids = sc.get("external_ids", {})
+            target_id = external_ids.get("targetTicketId")
+            if str(target_id) == str(child_id):
+                logging.debug(f"Found parent {t['id']} for child {child_id}")
                 return t["id"]
+
     return None
+
 # ------------------------
 # Main Logic
 # ------------------------
@@ -107,10 +110,10 @@ def main():
     for child_ticket in tickets:
         child_id = child_ticket["id"]
 
-        # Reverse lookup for parent
-        parent_id = find_parent_via_reverse_lookup(child_id)
+        # Find parent ticket via external_ids.targetTicketId
+        parent_id = find_parent_for_child(child_id)
         if not parent_id:
-            logging.warning(f"⚠ Ticket {child_id} — no parent found in reverse lookup.")
+            logging.warning(f"⚠ Ticket {child_id} — no parent found via external_ids.targetTicketId.")
             continue
 
         parent_ticket = get_ticket(parent_id)
