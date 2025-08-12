@@ -76,6 +76,34 @@ def set_ticket_field(ticket_id, field_id, value):
     return zendesk_put(url, payload)
 
 # ------------------------
+# Parent Finder
+# ------------------------
+def find_parent_ticket_id(ticket):
+    # 1. Check side conversations
+    side_convos = get_side_conversations(ticket["id"])
+    for sc in side_convos:
+        if sc.get("ticket_id") and sc["ticket_id"] != ticket["id"]:
+            return sc["ticket_id"]
+
+    # 2. Check follow-up source
+    if ticket.get("via", {}).get("followup_source_id"):
+        return ticket["via"]["followup_source_id"]
+
+    # 3. Check problem/incident relationship
+    if ticket.get("problem_id"):
+        return ticket["problem_id"]
+
+    # 4. Check custom field (if you have one that stores parent ticket ID)
+    PARENT_TICKET_FIELD_ID = None  # put actual ID if exists
+    if PARENT_TICKET_FIELD_ID:
+        for field in ticket.get("custom_fields", []):
+            if field["id"] == PARENT_TICKET_FIELD_ID and field["value"]:
+                return field["value"]
+
+    # No parent found
+    return None
+
+# ------------------------
 # Main Logic
 # ------------------------
 def main():
@@ -85,16 +113,12 @@ def main():
     for child_ticket in tickets:
         child_id = child_ticket["id"]
 
-        # Get parent ticket ID from side conversation
-        side_convos = get_side_conversations(child_id)
-        parent_id = None
-        for sc in side_convos:
-            if sc.get("ticket_id") and sc["ticket_id"] != child_id:
-                parent_id = sc["ticket_id"]
-                break
+        # Try to find parent ticket
+        parent_id = find_parent_ticket_id(child_ticket)
 
         if not parent_id:
-            logging.debug(f"Skipping ticket {child_id} — no parent found in side conversations.")
+            logging.warning(f"⚠ Ticket {child_id} — no parent found in side convos, follow-ups, or problem links.")
+            # Instead of skipping, we still try nothing here, or we could add logic to fetch from other sources
             continue
 
         parent_ticket = get_ticket(parent_id)
