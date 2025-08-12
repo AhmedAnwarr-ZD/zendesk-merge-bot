@@ -24,7 +24,7 @@ jobs:
           ORDER_NUMBER: ${{ github.event.client_payload.order_number }}
           TICKET_ID: ${{ github.event.client_payload.ticket_id }}
           ZENDESK_SUBDOMAIN: shopaleena
-          ZENDESK_EMAIL: aanwar@tgc-ksa.com
+          ZENDESK_EMAIL: ${{ secrets.EMAIL }}
           ZENDESK_TOKEN: ${{ secrets.TOKEN }}
           SHOPIFY_DOMAIN: shopaleena.myshopify.com
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
