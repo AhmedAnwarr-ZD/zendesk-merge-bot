@@ -1,31 +1,29 @@
-name: Zendesk Duplicate Merger
+name: Merge Zendesk Tickets
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # Runs every 10 minutes
-  workflow_dispatch:         # Allow manual trigger from GitHub Actions UI
+    - cron: "*/10 * * * *" # every 10 minutes
+  workflow_dispatch:
 
 jobs:
-  merge-tickets:
+  run-bot:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: '3.x'
 
       - name: Install dependencies
-        run: |
-          pip install requests
+        run: pip install requests
 
-      - name: Run merge script
+      - name: Run merge bot
         env:
-          ZENDESK_EMAIL: ${{ secrets.EMAIL }}
-          ZENDESK_TOKEN: ${{ secrets.TOKEN }}
-          ZENDESK_SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
-        run: |
-          python merge_bot.py
+          SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
+          EMAIL: ${{ secrets.EMAIL }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+        run: python merge_bot.py
