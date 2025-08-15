@@ -36,6 +36,11 @@ def zendesk_put(url, data):
         return False
     return True
 
+def get_side_conversations(ticket_id):
+    url = f"{BASE_URL}/tickets/{ticket_id}/side_conversations.json"
+    data = zendesk_get(url)
+    return data.get("side_conversations", []) if data else []
+
 def get_tickets_from_view(view_id):
     url = f"{BASE_URL}/views/{view_id}/tickets.json"
     tickets = []
