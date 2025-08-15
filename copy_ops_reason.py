@@ -179,9 +179,9 @@ def main():
                 user_cache[child_requester_id] = requester_name
 
             note_body = (
-                f"⚠ Ops Escalation Reason missing in parent ticket {parent_id}. "
-                f"Assignee in parent: {assignee_name}, "
-                f"Child requester: {requester_name}"
+                f"⚠ Ops Escalation Reason missing in customer ticket {parent_id}. "
+                f"Assignee in customer ticket: @{assignee_name}, "
+                f"Side conversation requester: @{requester_name}"
             )
 
             # Add note to PARENT ticket
