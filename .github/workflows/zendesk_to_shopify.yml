@@ -1,21 +1,31 @@
 name: Zendesk → Shopify Sync
 
 on:
-  repository_dispatch:   # Triggered by Zendesk webhook
-    types: [zendesk_ticket_note]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'sync_note or retrieve_orders'
+        required: true
+      ticket_id:
+        description: 'Zendesk ticket ID for sync_note'
+        required: false
+      identifier:
+        description: 'Customer email or phone for retrieve_orders'
+        required: false
 
 jobs:
-  sync:
+  run-script:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.x'
 
-      - name: Install dependencies
+      - name: Install requests
         run: pip install requests
 
       - name: Run Zendesk → Shopify script
@@ -23,7 +33,7 @@ jobs:
           API_TOKEN: ${{ secrets.API_TOKEN }}
           EMAIL: ${{ secrets.EMAIL }}
           SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
-          SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
-
-        run: python script.py
+          SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
+        run: |
+          python zendesk_shopify.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id || github.event.inputs.identifier }}
