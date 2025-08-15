@@ -84,21 +84,17 @@ def add_internal_note(ticket_id, body):
 # ------------------------
 # Reverse Lookup using external_ids.targetTicketId
 # ------------------------
-def find_parent_for_child(child_id):
+def find_parent_for_child(child_id, parent_cache=None):
     """
     Search for a parent ticket whose side conversation external_ids.targetTicketId matches child_id.
-    Does not require Ops Escalation Reason to be set.
+    Uses parent_cache if provided.
     """
+    if parent_cache and child_id in parent_cache:
+        return parent_cache[child_id]
+
     from datetime import datetime, timezone, timedelta
-
-    # Use timezone-aware UTC and extend to 90 days for safety
     date_90_days_ago = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
-
-    # Search all tickets created in last 90 days
-    search_url = (
-        f"{BASE_URL}/search.json?"
-        f"query=type:ticket created>{date_90_days_ago}"
-    )
+    search_url = f"{BASE_URL}/search.json?query=type:ticket created>{date_90_days_ago}"
 
     results = zendesk_get(search_url)
     if not results:
@@ -110,6 +106,8 @@ def find_parent_for_child(child_id):
             external_ids = sc.get("external_ids", {})
             target_id = external_ids.get("targetTicketId")
             if str(target_id) == str(child_id):
+                if parent_cache is not None:
+                    parent_cache[child_id] = t["id"]
                 logging.debug(f"Found parent {t['id']} for child {child_id}")
                 return t["id"]
 
