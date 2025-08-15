@@ -28,6 +28,10 @@ jobs:
       - name: Install requests
         run: pip install requests
 
+      - name: Install dependencies
+        run: pip install -r requirements.txt python-dotenv
+
+
       - name: Run Zendesk → Shopify script
         env:
           API_TOKEN: ${{ secrets.API_TOKEN }}
