@@ -1,142 +1,116 @@
 import os
-import sys
-import re
 import requests
-from datetime import datetime
+import re
+import sys
 
-# -----------------------------
-# Environment variables / secrets
-# -----------------------------
+# ------------------------
+# Environment Variables
+# ------------------------
+ZENDESK_SUBDOMAIN = os.getenv("SUBDOMAIN")
 ZENDESK_EMAIL = os.getenv("EMAIL")
 ZENDESK_TOKEN = os.getenv("API_TOKEN")
-ZENDESK_SUBDOMAIN = os.getenv("SUBDOMAIN")
-SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")  # full like shopaleena.myshopify.com
+SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
 
-if not all([ZENDESK_EMAIL, ZENDESK_TOKEN, ZENDESK_SUBDOMAIN, SHOPIFY_DOMAIN, SHOPIFY_TOKEN]):
-    sys.exit("❌ One or more required environment variables are missing")
+if not all([ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_TOKEN, SHOPIFY_DOMAIN, SHOPIFY_TOKEN]):
+    sys.exit("❌ Missing one or more required environment variables.")
 
-ZENDESK_AUTH = (f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN)
-SHOPIFY_HEADERS = {
-    "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-    "Content-Type": "application/json"
-}
-
-# -----------------------------
-# Helper functions
-# -----------------------------
-
-def is_valid_order_name(name):
-    return bool(re.match(r"^A\d+$", name))
-
-def is_valid_email(email):
-    return bool(re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email))
-
-def is_valid_phone(phone):
-    return bool(re.match(r"^\+\d{6,15}$", phone))
-
-# -----------------------------
-# User Story 1: Sync Zendesk note → Shopify order
-# -----------------------------
-def sync_zendesk_note_to_shopify(ticket_id, order_name):
-    if not is_valid_order_name(order_name):
-        sys.exit(f"❌ Invalid order format: {order_name}")
-
-    # 1️⃣ Get internal notes from Zendesk
-    zd_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/comments.json"
-    resp = requests.get(zd_url, auth=ZENDESK_AUTH)
+# ------------------------
+# Helper Functions
+# ------------------------
+def get_zendesk_ticket(ticket_id):
+    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/comments.json"
+    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN))
     if resp.status_code != 200:
-        sys.exit(f"❌ Zendesk API error: {resp.status_code} {resp.text}")
+        sys.exit(f"❌ Failed to fetch Zendesk ticket {ticket_id}: {resp.text}")
+    return resp.json().get("comments", [])
 
-    comments = resp.json().get("comments", [])
-    internal_notes = [c for c in comments if not c.get("public", True)]
-    if not internal_notes:
-        sys.exit("⚠ No internal notes found in Zendesk ticket")
-
-    latest_note = internal_notes[-1]["body"].strip()
-    note_with_order = f"Order: {order_name}\nAgent Note:\n{latest_note}"
-
-    # 2️⃣ Find Shopify order
-    shopify_url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders.json?name={order_name}"
-    resp = requests.get(shopify_url, headers=SHOPIFY_HEADERS)
-    if resp.status_code == 401:
-        sys.exit("❌ Shopify API Unauthorized — check SHOPIFY_TOKEN")
+def update_shopify_order_note(order_number, note_body):
+    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders.json?name={order_number}"
+    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
+    resp = requests.get(url, headers=headers)
+    if resp.status_code != 200:
+        sys.exit(f"❌ Shopify order fetch failed: {resp.text}")
     orders = resp.json().get("orders", [])
     if not orders:
-        sys.exit(f"❌ No Shopify order found for {order_name}")
+        sys.exit(f"❌ No Shopify order found for {order_number}")
     order_id = orders[0]["id"]
 
-    # 3️⃣ Update Shopify order note
+    # Update note
+    payload = {"order": {"id": order_id, "note": note_body}}
     update_url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders/{order_id}.json"
-    payload = {"order": {"id": order_id, "note": note_with_order}}
-    resp = requests.put(update_url, headers=SHOPIFY_HEADERS, json=payload)
+    update_resp = requests.put(update_url, headers=headers, json=payload)
+    if update_resp.status_code != 200:
+        sys.exit(f"❌ Failed to update Shopify order {order_number}: {update_resp.text}")
+    print(f"✅ Shopify order {order_number} updated with note.")
+
+def retrieve_shopify_orders_by_customer(identifier):
+    # identifier can be email or phone
+    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/customers/search.json?query={identifier}"
+    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
+    resp = requests.get(url, headers=headers)
     if resp.status_code != 200:
-        sys.exit(f"❌ Shopify update failed: {resp.status_code} {resp.text}")
-
-    print(f"✅ Added internal note from Zendesk ticket {ticket_id} to Shopify order {order_name}")
-
-# -----------------------------
-# User Story 2: Retrieve customer orders
-# -----------------------------
-def retrieve_customer_orders(identifier):
-    identifier = identifier.strip()
-    if is_valid_email(identifier):
-        query = f"email:{identifier}"
-    elif is_valid_phone(identifier):
-        query = f"phone:{identifier}"
-    else:
-        sys.exit("❌ Invalid email or phone format")
-
-    shopify_url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders.json?limit=250&{query}"
-    resp = requests.get(shopify_url, headers=SHOPIFY_HEADERS)
-    if resp.status_code != 200:
-        sys.exit(f"❌ Shopify API error: {resp.status_code} {resp.text}")
-
-    orders = resp.json().get("orders", [])
-    if not orders:
-        print("⚠ No orders found for this customer")
+        sys.exit(f"❌ Failed to search customer {identifier}: {resp.text}")
+    customers = resp.json().get("customers", [])
+    if not customers:
+        print(f"⚠ No customers found for {identifier}")
         return
 
-    # Sort oldest → newest
-    orders.sort(key=lambda x: x["created_at"])
+    for customer in customers:
+        customer_id = customer["id"]
+        orders_url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders.json?customer_id={customer_id}&status=any&order=created_at asc"
+        orders_resp = requests.get(orders_url, headers=headers)
+        if orders_resp.status_code != 200:
+            print(f"❌ Failed to fetch orders for customer {customer_id}")
+            continue
+        orders = orders_resp.json().get("orders", [])
+        if not orders:
+            print(f"⚠ No orders for customer {customer.get('email')}")
+            continue
 
-    for order in orders:
-        print("-" * 40)
-        print(f"Order Name: {order['name']}")
-        created_date = datetime.strptime(order['created_at'], "%Y-%m-%dT%H:%M:%S%z")
-        print(f"Created At: {created_date.strftime('%Y-%m-%d %H:%M:%S')}")
-        status = order.get("financial_status", "unknown")
-        fulfillment = order.get("fulfillment_status", "unfulfilled")
-        print(f"Status: {status} | Fulfillment: {fulfillment}")
-        shipping = order.get("shipping_address", {})
-        address = f"{shipping.get('address1', '')}, {shipping.get('city', '')}, {shipping.get('province', '')}, {shipping.get('country', '')}"
-        print(f"Shipping Address: {address}")
+        for o in orders:
+            print(f"Order: {o['name']}")
+            print(f"Created: {o['created_at']}")
+            print(f"Status | Delivery: {o['financial_status']} | {o['fulfillment_status']}")
+            print(f"Shipping: {o['shipping_address']}")
+            for item in o.get("line_items", []):
+                print(f"{item['name']} x {item['quantity']} - {item['price']} SAR")
+            print(f"Paid: {o['current_total_price']} SAR")
+            print(f"Owed: {float(o['total_price']) - float(o['current_total_price'])} SAR")
+            print("-"*40)
 
-        for item in order.get("line_items", []):
-            print(f"{item['name']} x {item['quantity']} - {item['price']} {order.get('currency', '')}")
+# ------------------------
+# Main Logic
+# ------------------------
+if len(sys.argv) < 2:
+    sys.exit("❌ Action required: sync_note or retrieve_orders")
 
-        paid_amount = order.get("current_total_price", "0")
-        owed_amount = float(order.get("total_due", 0))
-        print(f"Order Paid Amount = {paid_amount} {order.get('currency', '')}")
-        print(f"Order Owed Amount = {owed_amount} {order.get('currency', '')}")
+action = sys.argv[1]
 
-# -----------------------------
-# Main logic
-# -----------------------------
-if __name__ == "__main__":
-    lines = sys.stdin.read().splitlines()
-    action = lines[0].strip() if len(lines) > 0 else None
-    ticket_id = lines[1].strip() if len(lines) > 1 else None
-    order_name = lines[2].strip() if len(lines) > 2 else None
-    customer_identifier = lines[3].strip() if len(lines) > 3 else None
+if action == "sync_note":
+    ticket_id = sys.argv[2] if len(sys.argv) > 2 else None
+    if not ticket_id:
+        sys.exit("❌ Provide ticket ID for sync_note")
 
-    if action == "sync_note":
-        if not ticket_id or not order_name:
-            sys.exit("❌ ticket_id and order_name required for sync_note")
-        sync_zendesk_note_to_shopify(ticket_id, order_name)
-    elif action == "retrieve_orders":
-        if not customer_identifier:
-            sys.exit("❌ customer_identifier required for retrieve_orders")
-        retrieve_customer_orders(customer_identifier)
-    else:
-        sys.exit("❌ Invalid action. Use sync_note or retrieve_orders")
+    comments = get_zendesk_ticket(ticket_id)
+    # Take latest internal note
+    internal_notes = [c for c in comments if not c.get("public", True)]
+    if not internal_notes:
+        sys.exit("⚠ No internal notes found")
+    latest_note = internal_notes[-1]["body"]
+
+    # Extract order number A###### from note
+    match = re.search(r"(A\d{6,})", latest_note)
+    if not match:
+        sys.exit("⚠ No valid order number found in note")
+    order_number = match.group(1)
+    note_body = f"Zendesk comment: {latest_note}"
+    update_shopify_order_note(order_number, note_body)
+
+elif action == "retrieve_orders":
+    identifier = sys.argv[2] if len(sys.argv) > 2 else None
+    if not identifier:
+        sys.exit("❌ Provide email or phone number")
+    retrieve_shopify_orders_by_customer(identifier)
+else:
+    sys.exit("❌ Invalid action. Use sync_note or retrieve_orders")
