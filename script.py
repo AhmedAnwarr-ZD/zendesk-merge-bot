@@ -5,17 +5,16 @@ from dotenv import load_dotenv
 # Load .env file
 load_dotenv()
 
-# Required variables
-required_vars = [
+# Check environment variables
+required_env_vars = [
     "SHOPIFY_TOKEN",
     "SHOPIFY_DOMAIN",
     "ZENDESK_EMAIL",
-    "ZENDESK_API_TOKEN",
+    "ZENDESK_TOKEN",
     "ZENDESK_DOMAIN"
 ]
 
-# Check if any required variable is missing or empty
-missing_vars = [var for var in required_vars if not os.getenv(var)]
+missing_vars = [var for var in required_env_vars if not os.getenv(var)]
 
 if missing_vars:
     sys.exit(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
