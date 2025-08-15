@@ -95,18 +95,18 @@ def add_internal_note(ticket_id, requester_id, child_ticket_id):
 # ------------------------
 def find_parent_for_child(child_id):
     """Search for a parent ticket whose side conversation external_ids.targetTicketId matches child_id."""
-    date_30_days_ago = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
-    search_url = (
-        f"{BASE_URL}/search.json?"
-        f"query=type:ticket custom_field_{OPS_ESCALATION_REASON_ID}:* created>{date_30_days_ago}"
-    )
+    date_90_days_ago = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+    search_url = f"{BASE_URL}/search.json?query=type:ticket created>{date_90_days_ago}"
 
     results = zendesk_get(search_url)
     if not results:
+        logging.warning(f"No search results found when looking for parent of child {child_id}.")
         return None
 
     for t in results.get("results", []):
         side_convos = get_side_conversations(t["id"])
+        logging.debug(f"Parent ticket {t['id']} side_convos: {side_convos}")
+
         for sc in side_convos:
             external_ids = sc.get("external_ids", {})
             target_id = external_ids.get("targetTicketId")
@@ -114,6 +114,7 @@ def find_parent_for_child(child_id):
                 logging.debug(f"Found parent {t['id']} for child {child_id}")
                 return t["id"]
 
+    logging.warning(f"No parent ticket found for child {child_id} after checking all candidates.")
     return None
 
 # ------------------------
