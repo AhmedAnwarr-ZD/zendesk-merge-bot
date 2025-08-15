@@ -36,4 +36,4 @@ jobs:
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
           SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
         run: |
-          python zendesk_shopify.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id || github.event.inputs.identifier }}
+          python script.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id || github.event.inputs.identifier }}
