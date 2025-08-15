@@ -74,6 +74,22 @@ def set_ticket_field(ticket_id, field_id, value):
     }
     return zendesk_put(url, payload)
 
+def add_internal_note(ticket_id, requester_id, child_ticket_id):
+    """Add internal note to parent ticket asking requester to fill Ops Escalation Reason."""
+    message = (
+        f"@user-{requester_id} ⚠ Please add the Ops Escalation Reason for this ticket. "
+        f"This was triggered by child ticket #{child_ticket_id}."
+    )
+    payload = {
+        "ticket": {
+            "comment": {
+                "body": message,
+                "public": False
+            }
+        }
+    }
+    return zendesk_put(f"{BASE_URL}/tickets/{ticket_id}.json", payload)
+
 # ------------------------
 # Reverse Lookup using external_ids.targetTicketId
 # ------------------------
@@ -122,8 +138,14 @@ def main():
             continue
 
         parent_value = get_ticket_field(parent_ticket, OPS_ESCALATION_REASON_ID)
+        requester_id = parent_ticket.get("requester_id")
+
         if not parent_value:
-            logging.debug(f"Parent ticket {parent_id} has no Ops Escalation Reason.")
+            # Parent missing Ops Escalation Reason → add internal note
+            if add_internal_note(parent_id, requester_id, child_id):
+                logging.info(f"📝 Added internal note to parent ticket {parent_id} asking requester to add Ops Escalation Reason")
+            else:
+                logging.error(f"❌ Failed to add internal note to parent ticket {parent_id}")
             continue
 
         # Copy to child ticket
