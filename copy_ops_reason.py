@@ -74,39 +74,41 @@ def set_ticket_field(ticket_id, field_id, value):
     }
     return zendesk_put(url, payload)
 
-def add_internal_note(ticket_id, requester_id, child_ticket_id):
-    """Add internal note to parent ticket asking requester to fill Ops Escalation Reason."""
-    message = (
-        f"@user-{requester_id} ⚠ Please add the Ops Escalation Reason for this ticket. "
-        f"This was triggered by child ticket #{child_ticket_id}."
-    )
-    payload = {
+def add_internal_note_to_parent(parent_id, child_ticket):
+    """Add an internal note to parent ticket mentioning the child requester."""
+    child_requester_id = child_ticket.get("requester_id")
+    note = {
         "ticket": {
             "comment": {
-                "body": message,
+                "body": f"⚠ Ops Escalation Reason missing. Please check and add it. "
+                        f"Child ticket requester: <@{child_requester_id}>",
                 "public": False
             }
         }
     }
-    return zendesk_put(f"{BASE_URL}/tickets/{ticket_id}.json", payload)
+    url = f"{BASE_URL}/tickets/{parent_id}.json"
+    if zendesk_put(url, note):
+        logging.info(f"✅ Added internal note to parent ticket {parent_id} mentioning child requester {child_requester_id}")
+    else:
+        logging.error(f"❌ Failed to add internal note to parent ticket {parent_id}")
 
 # ------------------------
 # Reverse Lookup using external_ids.targetTicketId
 # ------------------------
 def find_parent_for_child(child_id):
     """Search for a parent ticket whose side conversation external_ids.targetTicketId matches child_id."""
-    date_90_days_ago = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
-    search_url = f"{BASE_URL}/search.json?query=type:ticket created>{date_90_days_ago}"
+    date_30_days_ago = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+    search_url = (
+        f"{BASE_URL}/search.json?"
+        f"query=type:ticket custom_field_{OPS_ESCALATION_REASON_ID}:* created>{date_30_days_ago}"
+    )
 
     results = zendesk_get(search_url)
     if not results:
-        logging.warning(f"No search results found when looking for parent of child {child_id}.")
         return None
 
     for t in results.get("results", []):
         side_convos = get_side_conversations(t["id"])
-        logging.debug(f"Parent ticket {t['id']} side_convos: {side_convos}")
-
         for sc in side_convos:
             external_ids = sc.get("external_ids", {})
             target_id = external_ids.get("targetTicketId")
@@ -114,7 +116,6 @@ def find_parent_for_child(child_id):
                 logging.debug(f"Found parent {t['id']} for child {child_id}")
                 return t["id"]
 
-    logging.warning(f"No parent ticket found for child {child_id} after checking all candidates.")
     return None
 
 # ------------------------
@@ -139,14 +140,9 @@ def main():
             continue
 
         parent_value = get_ticket_field(parent_ticket, OPS_ESCALATION_REASON_ID)
-        requester_id = parent_ticket.get("requester_id")
-
         if not parent_value:
-            # Parent missing Ops Escalation Reason → add internal note
-            if add_internal_note(parent_id, requester_id, child_id):
-                logging.info(f"📝 Added internal note to parent ticket {parent_id} asking requester to add Ops Escalation Reason")
-            else:
-                logging.error(f"❌ Failed to add internal note to parent ticket {parent_id}")
+            logging.debug(f"Parent ticket {parent_id} has no Ops Escalation Reason.")
+            add_internal_note_to_parent(parent_id, child_ticket)
             continue
 
         # Copy to child ticket
