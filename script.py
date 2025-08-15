@@ -32,7 +32,7 @@ def zendesk_get_ticket_comments(ticket_id):
     return resp.json().get("comments", [])
 
 def shopify_get_order_by_name(order_name):
-    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders.json?name={order_name}"
+    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2025-01/orders.json?name={urllib.parse.quote(order_name)}&status=any"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_TOKEN,
         "Content-Type": "application/json"
