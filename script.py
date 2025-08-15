@@ -99,7 +99,7 @@ if action == "sync_note":
 
     order = shopify_get_order_by_name(order_name)
     if not order:
-    sys.exit(f"❌ No Shopify order found for {order_name}. Please verify the order name and try again.")
+        sys.exit(f"❌ No Shopify order found for {order_name}. Please verify the order name and try again.")
 
     # Append comment to Shopify order note
     note_with_ticket = f"Zendesk Ticket {ticket_id} comment:\n{latest_note}"
