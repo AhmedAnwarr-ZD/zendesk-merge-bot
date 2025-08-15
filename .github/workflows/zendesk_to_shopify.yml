@@ -20,11 +20,10 @@ jobs:
 
       - name: Run Zendesk → Shopify script
         env:
-          ZENDESK_SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
-          ZENDESK_EMAIL: ${{ secrets.EMAIL }}
-          ZENDESK_API_TOKEN: ${{ secrets.API_TOKEN }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          EMAIL: ${{ secrets.EMAIL }}
+          SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
           SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
-          TICKET_ID: ${{ github.event.client_payload.ticket_id }}
-          ORDER_NUMBER: ${{ github.event.client_payload.order_number }}
+
         run: python script.py
