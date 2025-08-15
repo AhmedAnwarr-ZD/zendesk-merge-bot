@@ -1,0 +1,47 @@
+name: Zendesk → Shopify
+
+on:
+  workflow_dispatch:  # Manual trigger for now
+    inputs:
+      action:
+        description: 'Action to perform (sync_note / retrieve_orders)'
+        required: true
+        default: 'sync_note'
+      ticket_id:
+        description: 'Zendesk ticket ID (required for sync_note)'
+        required: false
+      order_name:
+        description: 'Shopify order name (required for sync_note)'
+        required: false
+      customer_identifier:
+        description: 'Customer email or phone (required for retrieve_orders)'
+        required: false
+
+jobs:
+  zendesk_shopify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Zendesk → Shopify script
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          EMAIL: ${{ secrets.EMAIL }}
+          SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
+          SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+        run: |
+          python scripts/zendesk_shopify.py <<< "${{ github.event.inputs.action }}
+${{ github.event.inputs.ticket_id }}
+${{ github.event.inputs.order_name }}
+${{ github.event.inputs.customer_identifier }}"
