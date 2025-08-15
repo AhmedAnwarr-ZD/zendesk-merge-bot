@@ -117,7 +117,7 @@ elif action == "retrieve_orders":
     # param can be email or phone
     query = param
     orders = shopify_search_orders_by_email_or_phone(query)
-    if not order:
+if not order:
     sys.exit(f"❌ No Shopify order found for {order_name}. Please verify the order name and try again.")
 
 else:
