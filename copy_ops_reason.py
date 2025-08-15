@@ -161,7 +161,7 @@ def main():
             else:
                 logging.error(f"❌ Failed to update child ticket {child_id}")
         else:
-            # Fetch assignee name
+            # Fetch assignee name and hyperlink
             assignee_id = parent_ticket.get("assignee_id")
             if assignee_id in user_cache:
                 assignee_name = user_cache[assignee_id]
@@ -169,19 +169,21 @@ def main():
                 assignee = get_user(assignee_id)
                 assignee_name = assignee["name"] if assignee else f"ID:{assignee_id}"
                 user_cache[assignee_id] = assignee_name
+            assignee_link = f"https://{SUBDOMAIN}.zendesk.com/users/{assignee_id}"
 
-            # Fetch child requester name
+            # Fetch child requester name and hyperlink
             if child_requester_id in user_cache:
                 requester_name = user_cache[child_requester_id]
             else:
                 requester = get_user(child_requester_id)
                 requester_name = requester["name"] if requester else f"ID:{child_requester_id}"
                 user_cache[child_requester_id] = requester_name
+            requester_link = f"https://{SUBDOMAIN}.zendesk.com/users/{child_requester_id}"
 
             note_body = (
-                f"⚠ Ops Escalation Reason missing in customer ticket {parent_id}. "
-                f"Assignee in customer ticket: @{assignee_name}, "
-                f"Side conversation requester: @{requester_name}"
+                f"⚠ Ops Escalation Reason missing in parent ticket {parent_id}. "
+                f"Assignee in parent: [{assignee_name}]({assignee_link}), "
+                f"Child requester: [{requester_name}]({requester_link})"
             )
 
             # Add note to PARENT ticket
@@ -189,6 +191,5 @@ def main():
                 logging.info(f"✅ Added internal note to parent {parent_id} mentioning missing Ops Escalation Reason")
             else:
                 logging.error(f"❌ Failed to add internal note to parent ticket {parent_id}")
-
 if __name__ == "__main__":
     main()
