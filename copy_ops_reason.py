@@ -74,23 +74,17 @@ def set_ticket_field(ticket_id, field_id, value):
     }
     return zendesk_put(url, payload)
 
-def add_internal_note_to_parent(parent_id, child_ticket):
-    """Add an internal note to parent ticket mentioning the child requester."""
-    child_requester_id = child_ticket.get("requester_id")
-    note = {
+def add_internal_note(ticket_id, body):
+    url = f"{BASE_URL}/tickets/{ticket_id}.json"
+    payload = {
         "ticket": {
             "comment": {
-                "body": f"⚠ Ops Escalation Reason missing. Please check and add it. "
-                        f"Child ticket requester: <@{child_requester_id}>",
+                "body": body,
                 "public": False
             }
         }
     }
-    url = f"{BASE_URL}/tickets/{parent_id}.json"
-    if zendesk_put(url, note):
-        logging.info(f"✅ Added internal note to parent ticket {parent_id} mentioning child requester {child_requester_id}")
-    else:
-        logging.error(f"❌ Failed to add internal note to parent ticket {parent_id}")
+    return zendesk_put(url, payload)
 
 # ------------------------
 # Reverse Lookup using external_ids.targetTicketId
@@ -127,6 +121,7 @@ def main():
 
     for child_ticket in tickets:
         child_id = child_ticket["id"]
+        child_requester_id = child_ticket["requester_id"]
 
         # Find parent ticket via external_ids.targetTicketId
         parent_id = find_parent_for_child(child_id)
@@ -140,9 +135,17 @@ def main():
             continue
 
         parent_value = get_ticket_field(parent_ticket, OPS_ESCALATION_REASON_ID)
+
         if not parent_value:
-            logging.debug(f"Parent ticket {parent_id} has no Ops Escalation Reason.")
-            add_internal_note_to_parent(parent_id, child_ticket)
+            logging.debug(f"Parent ticket {parent_id} has no Ops Escalation Reason. Mentioning child requester.")
+            note_body = (
+                f"⚠ Ops Escalation Reason missing. "
+                f"Please update. Child ticket requester: <@{child_requester_id}>"
+            )
+            if add_internal_note(parent_id, note_body):
+                logging.info(f"✅ Added internal note to parent {parent_id} mentioning child requester {child_requester_id}")
+            else:
+                logging.error(f"❌ Failed to add internal note to parent {parent_id}")
             continue
 
         # Copy to child ticket
