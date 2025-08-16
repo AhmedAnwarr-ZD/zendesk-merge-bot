@@ -22,18 +22,22 @@ def get_zendesk_ticket(ticket_id):
     resp.raise_for_status()
     return resp.json()["ticket"]
 
-def get_order_name_from_internal_notes(ticket):
+def get_order_name_from_internal_notes(ticket_id):
     """
-    Extract Shopify order name from INTERNAL notes only.
-    Matches formats: A123456, a123456789 etc.
+    Fetch ticket audits and extract Shopify order name from internal notes only.
     """
-    internal_notes = ticket.get("audit", {}).get("events", [])
-    for note in internal_notes:
-        if note.get("type") == "Comment" and note.get("public") is False:
-            body = note.get("body", "")
-            match = re.search(r"\b[aA]\d+\b", body)
-            if match:
-                return match.group(0)
+    url = f"{ZENDESK_API_URL}/tickets/{ticket_id}/audits.json"
+    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
+    resp.raise_for_status()
+    audits = resp.json().get("audits", [])
+
+    for audit in audits:
+        for event in audit.get("events", []):
+            if event.get("type") == "Comment" and event.get("public") is False:
+                body = event.get("body", "")
+                match = re.search(r"\b[aA]\d+\b", body)
+                if match:
+                    return match.group(0)
     return None
 
 def find_order_id_by_name(order_name):
