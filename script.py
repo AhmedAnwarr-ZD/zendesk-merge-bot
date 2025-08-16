@@ -2,6 +2,7 @@ import os
 import sys
 import requests
 from dotenv import load_dotenv
+import re
 
 # Load local .env if present
 load_dotenv()
@@ -21,15 +22,23 @@ def get_zendesk_ticket(ticket_id):
     resp.raise_for_status()
     return resp.json()["ticket"]
 
-def get_order_id_from_ticket(ticket):
+def get_order_id_from_internal_note(ticket_id):
     """
-    Extract Shopify order ID from Zendesk ticket subject or tags.
-    Modify this logic based on your order ID pattern.
+    Extract Shopify order ID from the latest Zendesk internal note (public=False)
     """
-    # Example: ticket subject contains (Order #12345)
-    import re
-    match = re.search(r"#(\d+)", ticket["subject"])
-    return match.group(1) if match else None
+    url = f"{ZENDESK_API_URL}/tickets/{ticket_id}/comments.json"
+    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN))
+    resp.raise_for_status()
+    comments = resp.json()["comments"]
+
+    # Look from latest to oldest
+    for comment in reversed(comments):
+        if not comment.get("public", True):  # internal note only
+            body = comment.get("body", "")
+            match = re.search(r"#(\d+)", body)  # adjust regex to your order pattern
+            if match:
+                return match.group(1)
+    return None
 
 def append_order_note(order_id, note_text):
     url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/orders/{order_id}.json"
@@ -44,11 +53,12 @@ def append_order_note(order_id, note_text):
 
 def sync_note(ticket_id):
     ticket = get_zendesk_ticket(ticket_id)
-    order_id = get_order_id_from_ticket(ticket)
+    order_id = get_order_id_from_internal_note(ticket_id)
     if not order_id:
-        print(f"No Shopify order ID found in ticket {ticket_id}")
+        print(f"No Shopify order ID found in internal notes of ticket {ticket_id}")
         return
     
+    # Use the ticket description as comment text
     comment_text = ticket.get("description", "")
     final_note = f"Zendesk Ticket #{ticket_id}: {comment_text}"
     append_order_note(order_id, final_note)
