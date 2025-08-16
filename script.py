@@ -48,7 +48,7 @@ def find_order_id_by_name(order_name):
     Handles special characters like '#' via URL encoding.
     """
     encoded_name = quote(order_name, safe='')  # encode special characters
-    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/orders.json?status=any&name={encoded_name}&limit=250"
+    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json?status=any&name={encoded_name}&limit=250"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_TOKEN,
         "Content-Type": "application/json"
@@ -69,7 +69,7 @@ def append_order_note(order_name, note_text):
         print(f"No Shopify order ID found for order name {order_name}")
         return
 
-    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/orders/{order_id}.json"
+    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2025-07/orders/{order_id}.json"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_TOKEN,
         "Content-Type": "application/json"
