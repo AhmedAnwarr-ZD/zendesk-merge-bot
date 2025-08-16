@@ -2,6 +2,8 @@ import os
 import re
 import sys
 import requests
+import base64
+import certifi  # ✅ Use certifi for SSL verification
 
 # Load secrets from environment
 ZENDESK_TOKEN = os.getenv("API_TOKEN")
@@ -13,31 +15,35 @@ SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 ZENDESK_API = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2"
 SHOPIFY_API = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01"
 
+
 def get_ticket_comments(ticket_id):
     url = f"{ZENDESK_API}/tickets/{ticket_id}/comments.json"
-    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN))
+    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN), verify=certifi.where())
     resp.raise_for_status()
     return resp.json()["comments"]
 
+
 def extract_order_and_comment(text):
     """
-    Extracts order number like A12345 (or a12345) and the rest of the comment
+    Extracts (A12345 comment text) pattern (case-insensitive for 'A')
     """
-    match = re.search(r"\b([Aa]\d+)\b\s*(.*)", text)
+    match = re.search(r"\(([Aa]\d+)\s+(.+?)\)", text)
     if match:
         return match.group(1), match.group(2)
     return None, None
+
 
 def download_attachment(url, filename):
     """
     Download attachment from Zendesk
     """
-    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN), stream=True)
+    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN), stream=True, verify=certifi.where())
     resp.raise_for_status()
     with open(filename, "wb") as f:
         for chunk in resp.iter_content(1024):
             f.write(chunk)
     return filename
+
 
 def upload_file_to_shopify(filepath):
     """
@@ -47,8 +53,6 @@ def upload_file_to_shopify(filepath):
     headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
     filename = os.path.basename(filepath)
 
-    # Encode as base64
-    import base64
     with open(filepath, "rb") as f:
         encoded_file = base64.b64encode(f.read()).decode("utf-8")
 
@@ -59,9 +63,10 @@ def upload_file_to_shopify(filepath):
         }
     }
 
-    resp = requests.post(url, headers=headers, json=payload)
+    resp = requests.post(url, headers=headers, json=payload, verify=certifi.where())
     resp.raise_for_status()
     return resp.json()["file"]["url"]
+
 
 def append_order_note(order_id, note):
     """
@@ -71,9 +76,10 @@ def append_order_note(order_id, note):
     headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
     payload = {"note": note}
 
-    resp = requests.put(url, headers=headers, json=payload)
+    resp = requests.put(url, headers=headers, json=payload, verify=certifi.where())
     resp.raise_for_status()
     return resp.json()
+
 
 def sync_note(ticket_id):
     comments = get_ticket_comments(ticket_id)
@@ -94,11 +100,12 @@ def sync_note(ticket_id):
                     if file_urls:
                         final_note += "\n\nAttachments:\n" + "\n".join(file_urls)
 
-                # Append to Shopify order timeline
-                append_order_note(order_id[1:], final_note)  # strip "A"
+                # Append to Shopify order timeline (strip "A" or "a")
+                append_order_note(order_id[1:], final_note)
                 print(f"✅ Synced note & attachments from Zendesk ticket {ticket_id} to Shopify order {order_id}")
                 return
     print(f"❌ No valid order pattern like (A12345 comment) found in ticket {ticket_id}")
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 3 or sys.argv[1] != "sync_note":
