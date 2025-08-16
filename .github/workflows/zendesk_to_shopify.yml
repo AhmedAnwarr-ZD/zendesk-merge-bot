@@ -6,9 +6,14 @@ name: Zendesk → Shopify Sync
       action:
         description: 'sync_note'
         required: true
+        default: 'sync_note'
       ticket_id:
         description: 'Zendesk ticket ID for sync_note'
         required: true
+      allow_insecure_ssl:
+        description: 'Temporarily disable SSL verification (use only if CA fix fails)'
+        required: false
+        default: 'false'
 
 jobs:
   run-script:
@@ -42,5 +47,7 @@ jobs:
           SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
           SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
+          # Optional override to disable SSL verification
+          ALLOW_INSECURE_SSL: ${{ github.event.inputs.allow_insecure_ssl }}
         run: |
           python script.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id }}
