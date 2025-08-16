@@ -97,30 +97,31 @@ def add_internal_note(ticket_id, body):
 def find_parent_for_child(child_id, parent_cache=None):
     """
     Search for a parent ticket whose side conversation external_ids.targetTicketId matches child_id.
-    Uses parent_cache if provided.
+    Uses parent_cache if provided. Searches all tickets (no date cutoff) and paginates.
     """
     if parent_cache and child_id in parent_cache:
         return parent_cache[child_id]
 
-    date_90_days_ago = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
-    search_url = f"{BASE_URL}/search.json?query=type:ticket created>{date_90_days_ago}"
+    search_url = f"{BASE_URL}/search.json?query=type:ticket"
+    while search_url:
+        data = zendesk_get(search_url)
+        if not data:
+            break
 
-    results = zendesk_get(search_url)
-    if not results:
-        return None
+        for t in data.get("results", []):
+            side_convos = get_side_conversations(t["id"])
+            for sc in side_convos:
+                external_ids = sc.get("external_ids", {})
+                target_id = external_ids.get("targetTicketId")
+                if str(target_id) == str(child_id):
+                    if parent_cache is not None:
+                        parent_cache[child_id] = t["id"]
+                    logging.debug(f"Found parent {t['id']} for child {child_id}")
+                    return t["id"]
 
-    for t in results.get("results", []):
-        side_convos = get_side_conversations(t["id"])
-        for sc in side_convos:
-            external_ids = sc.get("external_ids", {})
-            target_id = external_ids.get("targetTicketId")
-            if str(target_id) == str(child_id):
-                if parent_cache is not None:
-                    parent_cache[child_id] = t["id"]
-                logging.debug(f"Found parent {t['id']} for child {child_id}")
-                return t["id"]
+        search_url = data.get("next_page")
 
-    logging.warning(f"⚠ No parent found for child ticket {child_id}")
+    logging.warning(f"⚠ No parent found for child ticket {child_id} (after full search)")
     return None
 
 # ------------------------
