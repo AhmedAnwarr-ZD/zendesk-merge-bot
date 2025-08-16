@@ -15,6 +15,12 @@ SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
 SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 
 ZENDESK_API_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
+SHOPIFY_GRAPHQL_URL = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2025-07/graphql.json"
+
+HEADERS = {
+    "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+    "Content-Type": "application/json"
+}
 
 # --- Zendesk functions ---
 
@@ -36,64 +42,72 @@ def get_order_name_from_internal_notes(ticket_id):
 
     for audit in audits:
         for event in audit.get("events", []):
-            if event.get("type") == "Comment" and event.get("public") is False:
+            if event.get("type") == "Comment" and not event.get("public", True):
                 body = event.get("body", "")
                 match = re.search(r"\b[aA]\d+\b", body)
                 if match:
                     return match.group(0)
     return None
 
-# --- Shopify functions ---
+# --- Shopify GraphQL functions ---
 
-def find_order_id_by_name(order_name):
+def get_order_id_by_name(order_name):
     """
-    Fetch Shopify orders in pages and match by name manually.
+    Fetch Shopify order ID by name using GraphQL.
     """
-    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json?status=any&limit=250"
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Type": "application/json"
+    query = """
+    query getOrderByName($name: String!) {
+      orders(first: 1, query: $name) {
+        edges {
+          node {
+            id
+            name
+          }
+        }
+      }
     }
-
-    while url:
-        resp = requests.get(url, headers=headers, verify=False)  # skip SSL verification
-        resp.raise_for_status()
-        data = resp.json()
-        orders = data.get("orders", [])
-
-        # Match order by name (case-insensitive)
-        for order in orders:
-            if order.get("name", "").lower() == order_name.lower():
-                return order["id"]
-
-        # Check for pagination
-        link_header = resp.headers.get("Link", "")
-        next_url = None
-        if 'rel="next"' in link_header:
-            parts = link_header.split(",")
-            for part in parts:
-                if 'rel="next"' in part:
-                    next_url = part.split("<")[1].split(">")[0]
-                    break
-        url = next_url
-
+    """
+    variables = {"name": order_name}
+    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": query, "variables": variables})
+    resp.raise_for_status()
+    data = resp.json()
+    edges = data.get("data", {}).get("orders", {}).get("edges", [])
+    if edges:
+        return edges[0]["node"]["id"]
     return None
 
 def append_order_note(order_name, note_text):
-    order_id = find_order_id_by_name(order_name)
+    """
+    Append a note to a Shopify order using GraphQL mutation.
+    """
+    order_id = get_order_id_by_name(order_name)
     if not order_id:
-        print(f"No Shopify order ID found for order name {order_name}")
+        print(f"No Shopify order found for {order_name}")
         return
 
-    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2025-07/orders/{order_id}.json"
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Type": "application/json"
+    mutation = """
+    mutation updateOrderNote($id: ID!, $note: String!) {
+      orderUpdate(input: {id: $id, note: $note}) {
+        order {
+          id
+          note
+        }
+        userErrors {
+          field
+          message
+        }
+      }
     }
-    payload = {"order": {"id": order_id, "note": note_text}}
-    resp = requests.put(url, headers=headers, json=payload, verify=False)  # skip SSL
+    """
+    variables = {"id": order_id, "note": note_text}
+    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": mutation, "variables": variables})
     resp.raise_for_status()
-    return resp.json()
+    result = resp.json()
+    errors = result.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
+    if errors:
+        print(f"Errors updating order {order_name}: {errors}")
+    else:
+        print(f"Order {order_name} updated successfully.")
 
 # --- Main sync function ---
 
