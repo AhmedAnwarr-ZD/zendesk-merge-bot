@@ -100,6 +100,87 @@ def get_order_id_from_ticket(ticket):
     return match.group(1) if match else None
 
 
+def _extract_order_candidates(ticket):
+    """Extract possible order_id or order_name from subject/description for logging and resolution."""
+    import re
+
+    subject = ticket.get("subject", "") if isinstance(ticket, dict) else ""
+    description = ticket.get("description", "") if isinstance(ticket, dict) else ""
+    text = f"{subject}\n{description}"
+
+    # Prefer explicit labels
+    id_labeled = re.search(r"order\s*id\s*[:#-]?\s*(\d{10,20})", text, re.I)
+    name_labeled = re.search(r"order\s*name\s*[:#-]?\s*([A-Za-z][A-Za-z0-9-]+)", text, re.I)
+
+    # Generic patterns
+    numeric_name = re.search(r"#(\d{3,})", text)  # e.g., #12345
+    alpha_numeric = re.search(r"\b([A-Za-z][A-Za-z0-9]{4,})\b", text)  # e.g., A266626
+    long_digits = re.search(r"\b(\d{10,20})\b", text)  # possible Shopify order id
+
+    order_id = (id_labeled.group(1) if id_labeled else None) or (long_digits.group(1) if long_digits else None)
+    order_name = (name_labeled.group(1) if name_labeled else None) or (numeric_name.group(1) if numeric_name else None)
+
+    # If numeric_name is matched via #12345, preserve the '#' for searching by name
+    if name_labeled is None and numeric_name:
+        order_name = f"#{numeric_name.group(1)}"
+    elif name_labeled:
+        order_name = name_labeled.group(1)
+    elif alpha_numeric:
+        order_name = alpha_numeric.group(1)
+
+    return {"order_id": order_id, "order_name": order_name}
+
+
+def _resolve_order_id_from_name(order_name):
+    """Resolve a Shopify order id from an order name using the Admin GraphQL API.
+
+    Tries with and without a leading '#'. Returns a string id if found else None.
+    """
+    cfg = _get_required_config()
+    domain = cfg["SHOPIFY_DOMAIN"]
+    headers = {
+        "X-Shopify-Access-Token": cfg["SHOPIFY_TOKEN"],
+        "Content-Type": "application/json",
+    }
+    url = f"https://{domain}.myshopify.com/admin/api/2024-01/graphql.json"
+
+    def query_for(candidate_name):
+        query = {
+            "query": (
+                "query($q: String!) { orders(first: 1, query: $q) { edges { node { id name } } } }"
+            ),
+            "variables": {"q": f"name:{candidate_name}"},
+        }
+        resp = requests.post(url, headers=headers, json=query, **_requests_verify_kwarg())
+        resp.raise_for_status()
+        data = resp.json()
+        edges = (((data or {}).get("data") or {}).get("orders") or {}).get("edges") or []
+        if not edges:
+            return None
+        node = edges[0].get("node") or {}
+        gid = node.get("id") or ""
+        if gid.startswith("gid://shopify/Order/"):
+            return gid.rsplit("/", 1)[-1]
+        # Fallback to id field if numeric
+        raw_id = node.get("id") or node.get("legacyResourceId")
+        return str(raw_id) if raw_id else None
+
+    candidates = [order_name]
+    if order_name.startswith("#"):
+        candidates.append(order_name.lstrip("#"))
+    else:
+        candidates.append(f"#{order_name}")
+
+    for cand in candidates:
+        try:
+            resolved = query_for(cand)
+            if resolved:
+                return resolved
+        except Exception:
+            continue
+    return None
+
+
 def append_order_note(order_id, note_text):
     cfg = _get_required_config()
     url = (
@@ -144,7 +225,6 @@ def upload_file_to_shopify_bytes(filename, file_bytes):
         "X-Shopify-Access-Token": cfg["SHOPIFY_TOKEN"],
         "Content-Type": "application/json",
     }
-    # Guess content type; Shopify requires only attachment; filename for display
     encoded = base64.b64encode(file_bytes).decode("ascii")
     payload = {
         "file": {
@@ -160,9 +240,36 @@ def upload_file_to_shopify_bytes(filename, file_bytes):
 
 def sync_note(ticket_id):
     ticket = get_zendesk_ticket(ticket_id)
+
+    # Extract order info from subject/description for logging and resolution
+    candidates = _extract_order_candidates(ticket)
+    if candidates.get("order_id"):
+        print(f"Found Shopify order id in note: {candidates['order_id']}")
+    if candidates.get("order_name"):
+        print(f"Found order name in note: {candidates['order_name']}")
+
+    # Legacy subject-based extraction
     order_id = get_order_id_from_ticket(ticket)
+
+    # Fallback to extracted id from body
+    if not order_id and candidates.get("order_id"):
+        order_id = candidates["order_id"]
+
+    # If we have an order name but no id, try to resolve via Shopify API
+    if not order_id and candidates.get("order_name"):
+        resolved = _resolve_order_id_from_name(candidates["order_name"])
+        if resolved:
+            print(
+                f"Resolved order name {candidates['order_name']} to Shopify order id {resolved}"
+            )
+            order_id = resolved
+        else:
+            print(
+                f"Found order name {candidates['order_name']} but could not resolve to a Shopify order id"
+            )
+
     if not order_id:
-        print(f"No Shopify order ID found in ticket {ticket_id}")
+        print(f"No Shopify order ID found in ticket {_normalize_ticket_id(ticket_id)}")
         return
 
     comment_text = ticket.get("description", "")
