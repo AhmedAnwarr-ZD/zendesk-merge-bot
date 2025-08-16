@@ -1,6 +1,6 @@
 name: Zendesk → Shopify Sync
 
-on:
+'on':
   workflow_dispatch:
     inputs:
       action:

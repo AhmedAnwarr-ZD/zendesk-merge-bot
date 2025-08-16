@@ -1,46 +1,88 @@
 import os
 import sys
 import requests
-from dotenv import load_dotenv
+
+# Try to load local .env if python-dotenv is available
+try:
+    from dotenv import load_dotenv  # type: ignore
+except Exception:
+    def load_dotenv(*args, **kwargs):  # type: ignore
+        return False
 
 # Load local .env if present
 load_dotenv()
 
-# Environment variables
-EMAIL = os.getenv("EMAIL")
-API_TOKEN = os.getenv("API_TOKEN")
-SUBDOMAIN = os.getenv("SUBDOMAIN")
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
-SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 
-ZENDESK_API_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
+def _get_required_config():
+    """Fetch and validate required environment variables each time.
+
+    Returns a dict with validated configuration.
+    Raises RuntimeError with a helpful message if any are missing.
+    """
+    email = os.getenv("EMAIL")
+    api_token = os.getenv("API_TOKEN")
+    subdomain = os.getenv("SUBDOMAIN")
+    shopify_token = os.getenv("SHOPIFY_TOKEN")
+    shopify_domain = os.getenv("SHOPIFY_DOMAIN")
+
+    missing = [
+        name for name, value in [
+            ("EMAIL", email),
+            ("API_TOKEN", api_token),
+            ("SUBDOMAIN", subdomain),
+            ("SHOPIFY_TOKEN", shopify_token),
+            ("SHOPIFY_DOMAIN", shopify_domain),
+        ]
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
+
+    return {
+        "EMAIL": email,
+        "API_TOKEN": api_token,
+        "SUBDOMAIN": subdomain,
+        "SHOPIFY_TOKEN": shopify_token,
+        "SHOPIFY_DOMAIN": shopify_domain,
+    }
+
 
 def get_zendesk_ticket(ticket_id):
-    url = f"{ZENDESK_API_URL}/tickets/{ticket_id}.json"
-    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN))
+    cfg = _get_required_config()
+    url = f"https://{cfg['SUBDOMAIN']}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+    resp = requests.get(url, auth=(cfg["EMAIL"] + "/token", cfg["API_TOKEN"]))
     resp.raise_for_status()
     return resp.json()["ticket"]
+
 
 def get_order_id_from_ticket(ticket):
     """
     Extract Shopify order ID from Zendesk ticket subject or tags.
     Modify this logic based on your order ID pattern.
     """
-    # Example: ticket subject contains (Order #12345)
     import re
-    match = re.search(r"#(\d+)", ticket["subject"])
+
+    subject = ticket.get("subject", "") if isinstance(ticket, dict) else ""
+    match = re.search(r"#(\d+)", subject)
     return match.group(1) if match else None
 
+
 def append_order_note(order_id, note_text):
-    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/orders/{order_id}.json"
+    cfg = _get_required_config()
+    url = (
+        f"https://{cfg['SHOPIFY_DOMAIN']}.myshopify.com/admin/api/2024-01/orders/{order_id}.json"
+    )
     headers = {
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Type": "application/json"
+        "X-Shopify-Access-Token": cfg["SHOPIFY_TOKEN"],
+        "Content-Type": "application/json",
     }
-    payload = {"order": {"id": order_id, "note": note_text}}
+    payload = {"order": {"id": int(order_id), "note": note_text}}
     resp = requests.put(url, headers=headers, json=payload)
     resp.raise_for_status()
     return resp.json()
+
 
 def sync_note(ticket_id):
     ticket = get_zendesk_ticket(ticket_id)
@@ -48,11 +90,12 @@ def sync_note(ticket_id):
     if not order_id:
         print(f"No Shopify order ID found in ticket {ticket_id}")
         return
-    
+
     comment_text = ticket.get("description", "")
     final_note = f"Zendesk Ticket #{ticket_id}: {comment_text}"
     append_order_note(order_id, final_note)
     print(f"Synced ticket #{ticket_id} to Shopify order #{order_id}")
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
