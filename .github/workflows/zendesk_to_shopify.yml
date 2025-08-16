@@ -25,17 +25,10 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install requests
-        run: pip install requests
-
       - name: Install dependencies
-        run: pip install -r requirements.txt python-dotenv
-
-      - name: Update CA certificates
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ca-certificates
-          sudo update-ca-certificates
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt python-dotenv requests certifi
 
       - name: Run Zendesk → Shopify script
         env:
