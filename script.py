@@ -3,7 +3,6 @@ import sys
 import requests
 import re
 from dotenv import load_dotenv
-from urllib.parse import quote
 
 # Load local .env if present
 load_dotenv()
@@ -17,6 +16,8 @@ SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 
 ZENDESK_API_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
 
+# --- Zendesk functions ---
+
 def get_zendesk_ticket(ticket_id):
     url = f"{ZENDESK_API_URL}/tickets/{ticket_id}.json"
     resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
@@ -26,7 +27,7 @@ def get_zendesk_ticket(ticket_id):
 def get_order_name_from_internal_notes(ticket_id):
     """
     Fetch ticket audits and extract Shopify order name from internal notes only.
-    Matches patterns like: A123456, a122345545646
+    Matches patterns like A123456 or a123456789.
     """
     url = f"{ZENDESK_API_URL}/tickets/{ticket_id}/audits.json"
     resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
@@ -35,32 +36,47 @@ def get_order_name_from_internal_notes(ticket_id):
 
     for audit in audits:
         for event in audit.get("events", []):
-            if event.get("type") == "Comment" and not event.get("public", True):
+            if event.get("type") == "Comment" and event.get("public") is False:
                 body = event.get("body", "")
-                match = re.search(r"\b[Aa]\d+\b", body)
+                match = re.search(r"\b[aA]\d+\b", body)
                 if match:
                     return match.group(0)
     return None
 
+# --- Shopify functions ---
+
 def find_order_id_by_name(order_name):
     """
-    Fetch Shopify orders and match by order name.
-    Handles special characters like '#' via URL encoding.
+    Fetch Shopify orders in pages and match by name manually.
     """
-    encoded_name = quote(order_name, safe='')  # encode special characters
-    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json?status=any&name={encoded_name}&limit=250"
+    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json?status=any&limit=250"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_TOKEN,
         "Content-Type": "application/json"
     }
 
-    resp = requests.get(url, headers=headers, verify=False)
-    resp.raise_for_status()
-    orders = resp.json().get("orders", [])
+    while url:
+        resp = requests.get(url, headers=headers, verify=False)  # skip SSL verification
+        resp.raise_for_status()
+        data = resp.json()
+        orders = data.get("orders", [])
 
-    for order in orders:
-        if order.get("name", "").lower() == order_name.lower():
-            return order["id"]
+        # Match order by name (case-insensitive)
+        for order in orders:
+            if order.get("name", "").lower() == order_name.lower():
+                return order["id"]
+
+        # Check for pagination
+        link_header = resp.headers.get("Link", "")
+        next_url = None
+        if 'rel="next"' in link_header:
+            parts = link_header.split(",")
+            for part in parts:
+                if 'rel="next"' in part:
+                    next_url = part.split("<")[1].split(">")[0]
+                    break
+        url = next_url
+
     return None
 
 def append_order_note(order_name, note_text):
@@ -75,14 +91,16 @@ def append_order_note(order_name, note_text):
         "Content-Type": "application/json"
     }
     payload = {"order": {"id": order_id, "note": note_text}}
-    resp = requests.put(url, headers=headers, json=payload, verify=False)
+    resp = requests.put(url, headers=headers, json=payload, verify=False)  # skip SSL
     resp.raise_for_status()
     return resp.json()
 
+# --- Main sync function ---
+
 def sync_note(ticket_id):
     ticket = get_zendesk_ticket(ticket_id)
-    
     order_name = get_order_name_from_internal_notes(ticket_id)
+
     if not order_name:
         print(f"No Shopify order name found in internal notes of ticket {ticket_id}")
         return
@@ -91,6 +109,8 @@ def sync_note(ticket_id):
     final_note = f"Zendesk Ticket #{ticket_id}: {comment_text}"
     append_order_note(order_name, final_note)
     print(f"Synced ticket #{ticket_id} to Shopify order {order_name}")
+
+# --- CLI entry point ---
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
