@@ -68,7 +68,7 @@ def get_order_id_by_name(order_name):
     }
     """
     variables = {"name": order_name}
-    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": query, "variables": variables})
+    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": query, "variables": variables}, verify=False)
     resp.raise_for_status()
     data = resp.json()
     edges = data.get("data", {}).get("orders", {}).get("edges", [])
@@ -100,7 +100,7 @@ def append_order_note(order_name, note_text):
     }
     """
     variables = {"id": order_id, "note": note_text}
-    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": mutation, "variables": variables})
+    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": mutation, "variables": variables}, verify=False)
     resp.raise_for_status()
     result = resp.json()
     errors = result.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
