@@ -33,9 +33,9 @@ def get_order_name_from_internal_notes(ticket_id):
 
     for audit in audits:
         for event in audit.get("events", []):
-            if event.get("type") == "Comment" and event.get("public") is False:
+            if event.get("type") == "Comment" and not event.get("public", True):
                 body = event.get("body", "")
-                match = re.search(r"\b[aA]\d+\b", body)
+                match = re.search(r"\b[Aa]\d+\b", body)
                 if match:
                     return match.group(0)
     return None
@@ -70,14 +70,15 @@ def append_order_note(order_name, note_text):
         "Content-Type": "application/json"
     }
     payload = {"order": {"id": order_id, "note": note_text}}
-    resp = requests.put(url, headers=headers, json=payload, verify=False)  # skip SSL
+    resp = requests.put(url, headers=headers, json=payload, verify=False)
     resp.raise_for_status()
     return resp.json()
 
 def sync_note(ticket_id):
     ticket = get_zendesk_ticket(ticket_id)
     
-    order_name = get_order_name_from_internal_notes(ticket)
+    # FIX: pass ticket_id, not ticket object
+    order_name = get_order_name_from_internal_notes(ticket_id)
     if not order_name:
         print(f"No Shopify order name found in internal notes of ticket {ticket_id}")
         return
