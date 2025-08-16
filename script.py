@@ -1,64 +1,68 @@
 import os
-import re
 import sys
 import requests
+from dotenv import load_dotenv
 
-# Load secrets from environment
-ZENDESK_TOKEN = os.getenv("API_TOKEN")
-ZENDESK_EMAIL = os.getenv("EMAIL")
-ZENDESK_SUBDOMAIN = os.getenv("SUBDOMAIN")
+# Load local .env if present
+load_dotenv()
+
+# Environment variables
+EMAIL = os.getenv("EMAIL")
+API_TOKEN = os.getenv("API_TOKEN")
+SUBDOMAIN = os.getenv("SUBDOMAIN")
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
 SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 
-ZENDESK_API = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2"
-SHOPIFY_API = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01"
+ZENDESK_API_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
 
-
-def get_ticket_comments(ticket_id):
-    url = f"{ZENDESK_API}/tickets/{ticket_id}/comments.json"
-    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN))
+def get_zendesk_ticket(ticket_id):
+    url = f"{ZENDESK_API_URL}/tickets/{ticket_id}.json"
+    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN))
     resp.raise_for_status()
-    return resp.json()["comments"]
+    return resp.json()["ticket"]
 
+def get_order_id_from_ticket(ticket):
+    """
+    Extract Shopify order ID from Zendesk ticket subject or tags.
+    Modify this logic based on your order ID pattern.
+    """
+    # Example: ticket subject contains (Order #12345)
+    import re
+    match = re.search(r"#(\d+)", ticket["subject"])
+    return match.group(1) if match else None
 
-def extract_order_and_comment(text):
-    """Extracts (A12345 comment text) pattern, case-insensitive for 'A'"""
-    match = re.search(r"\(([Aa]\d+)\s+(.+?)\)", text)
-    if match:
-        return match.group(1), match.group(2)
-    return None, None
-
-
-def append_order_note(order_id, note):
-    """Append a note to Shopify order timeline"""
-    url = f"{SHOPIFY_API}/orders/{order_id}/notes.json"
-    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
-    payload = {"note": note}
-
+def append_order_note(order_id, note_text):
+    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/orders/{order_id}.json"
+    headers = {
+        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+        "Content-Type": "application/json"
+    }
+    payload = {"order": {"id": order_id, "note": note_text}}
     resp = requests.put(url, headers=headers, json=payload)
     resp.raise_for_status()
     return resp.json()
 
-
 def sync_note(ticket_id):
-    comments = get_ticket_comments(ticket_id)
-    for c in reversed(comments):  # latest first
-        if not c["public"]:  # internal note
-            order_id, comment_text = extract_order_and_comment(c["body"])
-            if order_id:
-                final_note = f"From Zendesk Ticket {ticket_id}: {comment_text}"
-
-                # Append note to Shopify order (strip 'A' or 'a')
-                append_order_note(order_id[1:], final_note)
-                print(f"✅ Synced note from Zendesk ticket {ticket_id} to Shopify order {order_id}")
-                return
-    print(f"❌ No valid order pattern like (A12345 comment) found in ticket {ticket_id}")
-
+    ticket = get_zendesk_ticket(ticket_id)
+    order_id = get_order_id_from_ticket(ticket)
+    if not order_id:
+        print(f"No Shopify order ID found in ticket {ticket_id}")
+        return
+    
+    comment_text = ticket.get("description", "")
+    final_note = f"Zendesk Ticket #{ticket_id}: {comment_text}"
+    append_order_note(order_id, final_note)
+    print(f"Synced ticket #{ticket_id} to Shopify order #{order_id}")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != "sync_note":
+    if len(sys.argv) < 3:
         print("Usage: python script.py sync_note <ticket_id>")
         sys.exit(1)
 
+    action = sys.argv[1]
     ticket_id = sys.argv[2]
-    sync_note(ticket_id)
+
+    if action == "sync_note":
+        sync_note(ticket_id)
+    else:
+        print(f"Action '{action}' not supported.")
