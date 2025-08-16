@@ -2,8 +2,7 @@ import os
 import re
 import sys
 import requests
-import base64
-import certifi  # ✅ Use certifi for SSL verification
+import certifi  # Ensure HTTPS requests are secure
 
 # Load secrets from environment
 ZENDESK_TOKEN = os.getenv("API_TOKEN")
@@ -33,41 +32,6 @@ def extract_order_and_comment(text):
     return None, None
 
 
-def download_attachment(url, filename):
-    """
-    Download attachment from Zendesk
-    """
-    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN), stream=True, verify=certifi.where())
-    resp.raise_for_status()
-    with open(filename, "wb") as f:
-        for chunk in resp.iter_content(1024):
-            f.write(chunk)
-    return filename
-
-
-def upload_file_to_shopify(filepath):
-    """
-    Upload file to Shopify Files API and return URL
-    """
-    url = f"{SHOPIFY_API}/files.json"
-    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
-    filename = os.path.basename(filepath)
-
-    with open(filepath, "rb") as f:
-        encoded_file = base64.b64encode(f.read()).decode("utf-8")
-
-    payload = {
-        "file": {
-            "attachment": encoded_file,
-            "filename": filename
-        }
-    }
-
-    resp = requests.post(url, headers=headers, json=payload, verify=certifi.where())
-    resp.raise_for_status()
-    return resp.json()["file"]["url"]
-
-
 def append_order_note(order_id, note):
     """
     Append a note to Shopify order timeline
@@ -89,20 +53,14 @@ def sync_note(ticket_id):
             if order_id:
                 final_note = f"From Zendesk Ticket {ticket_id}: {comment_text}"
 
-                # Handle attachments
+                # Instead of uploading, append Zendesk attachment URLs
                 if c.get("attachments"):
-                    file_urls = []
-                    for att in c["attachments"]:
-                        local_file = download_attachment(att["content_url"], att["file_name"])
-                        file_url = upload_file_to_shopify(local_file)
-                        file_urls.append(file_url)
-                        os.remove(local_file)
-                    if file_urls:
-                        final_note += "\n\nAttachments:\n" + "\n".join(file_urls)
+                    attachment_urls = [att["content_url"] for att in c["attachments"]]
+                    final_note += "\n\nAttachments:\n" + "\n".join(attachment_urls)
 
                 # Append to Shopify order timeline (strip "A" or "a")
                 append_order_note(order_id[1:], final_note)
-                print(f"✅ Synced note & attachments from Zendesk ticket {ticket_id} to Shopify order {order_id}")
+                print(f"✅ Synced note from Zendesk ticket {ticket_id} to Shopify order {order_id}")
                 return
     print(f"❌ No valid order pattern like (A12345 comment) found in ticket {ticket_id}")
 
