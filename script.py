@@ -58,23 +58,27 @@ def update_shopify_order_note(order_id, note_text):
 # ------------------------
 # Main Sync Logic
 # ------------------------
-def sync_note_to_shopify(ticket_id):
-    comments = get_ticket_comments(ticket_id)
+def sync_note(ticket_id):
+    ticket = get_ticket(ticket_id)
+    if not ticket:
+        print(f"❌ Ticket {ticket_id} not found.")
+        return
 
-    # Find the first comment containing an order number like (A12345 ...)
-    order_name = None
-    note_text = None
-    for c in comments:
-        match = re.search(r"\(A\d{4,}.*?\)", c.get("body", ""))
+    # Look through all comments/notes
+    for comment in ticket["comments"]:
+        note_text = comment["body"]
+
+        # ✅ Loosened regex: match order number A123456 regardless of what follows
+        match = re.search(r"A(\d+)\b", note_text)
         if match:
-            full_match = match.group(0)        # e.g. (A12345 comment)
-            parts = full_match.strip("()").split(" ", 1)
-            order_name = parts[0]              # A12345
-            note_text = parts[1] if len(parts) > 1 else ""
-            break
+            order_id = match.group(1)
+            print(f"✅ Found order ID: {order_id} in note: {note_text}")
 
-    if not order_name:
-        sys.exit(f"❌ No valid order pattern like (A12345 comment) found in ticket {ticket_id}")
+            # Example: sync logic here
+            sync_order_with_ticket(order_id, ticket_id)
+            return
+
+    print(f"❌ No valid order ID found in notes for ticket {ticket_id}.")
 
     # Fetch order from Shopify
     order = get_shopify_order(order_name)
