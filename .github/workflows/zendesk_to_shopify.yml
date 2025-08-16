@@ -1,29 +1,44 @@
 name: Zendesk → Shopify Sync
 
-on:
+'on':
   workflow_dispatch:
     inputs:
       action:
         description: 'sync_note'
         required: true
+        default: 'sync_note'
       ticket_id:
         description: 'Zendesk ticket ID for sync_note'
         required: true
+      allow_insecure_ssl:
+        description: 'Temporarily disable SSL verification (use only if CA fix fails)'
+        required: false
+        default: 'false'
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests python-dotenv
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir requests python-dotenv certifi
+
+      - name: Configure Requests CA bundle
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_ENV"
+          import certifi
+          print(f"SSL_CERT_FILE={certifi.where()}")
+          print(f"REQUESTS_CA_BUNDLE={certifi.where()}")
+          PY
 
       - name: Run Zendesk → Shopify script
         env:
@@ -32,5 +47,7 @@ jobs:
           SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
           SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
+          # Optional override to disable SSL verification
+          ALLOW_INSECURE_SSL: ${{ github.event.inputs.allow_insecure_ssl }}
         run: |
           python script.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id }}
