@@ -43,4 +43,55 @@ def find_order_id_by_name(order_name):
     url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/orders.json?status=any&limit=250"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Typ
+        "Content-Type": "application/json"
+    }
+    resp = requests.get(url, headers=headers, verify=False)  # skip SSL verification
+    resp.raise_for_status()
+    orders = resp.json().get("orders", [])
+    
+    for order in orders:
+        if order.get("name", "").lower() == order_name.lower():
+            return order["id"]
+    return None
+
+def append_order_note(order_name, note_text):
+    order_id = find_order_id_by_name(order_name)
+    if not order_id:
+        print(f"No Shopify order ID found for order name {order_name}")
+        return
+    
+    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/orders/{order_id}.json"
+    headers = {
+        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+        "Content-Type": "application/json"
+    }
+    payload = {"order": {"id": order_id, "note": note_text}}
+    resp = requests.put(url, headers=headers, json=payload, verify=False)  # skip SSL
+    resp.raise_for_status()
+    return resp.json()
+
+def sync_note(ticket_id):
+    ticket = get_zendesk_ticket(ticket_id)
+    
+    order_name = get_order_name_from_internal_notes(ticket)
+    if not order_name:
+        print(f"No Shopify order name found in internal notes of ticket {ticket_id}")
+        return
+
+    comment_text = ticket.get("description", "")
+    final_note = f"Zendesk Ticket #{ticket_id}: {comment_text}"
+    append_order_note(order_name, final_note)
+    print(f"Synced ticket #{ticket_id} to Shopify order {order_name}")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Usage: python script.py sync_note <ticket_id>")
+        sys.exit(1)
+
+    action = sys.argv[1]
+    ticket_id = sys.argv[2]
+
+    if action == "sync_note":
+        sync_note(ticket_id)
+    else:
+        print(f"Action '{action}' not supported.")
