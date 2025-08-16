@@ -1,72 +1,97 @@
 import os
 import sys
-from dotenv import load_dotenv
-
-# Load .env file
-load_dotenv()
-
-# Check environment variables
-required_env_vars = [
-    "SHOPIFY_TOKEN",
-    "SHOPIFY_DOMAIN",
-    "ZENDESK_EMAIL",
-    "ZENDESK_TOKEN",
-    "ZENDESK_DOMAIN"
-]
-
-missing_vars = [var for var in required_env_vars if not os.getenv(var)]
-
-if missing_vars:
-    sys.exit(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
-
+import re
 import requests
 
-def sync_order_note_from_zendesk(ticket_id):
-    # Get order name from Zendesk ticket
-    zendesk_url = f"https://{os.getenv('ZENDESK_DOMAIN')}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-    auth = (f"{os.getenv('ZENDESK_EMAIL')}/token", os.getenv("ZENDESK_API_TOKEN"))
+# ------------------------
+# Environment variables
+# ------------------------
+SUBDOMAIN = os.environ["SUBDOMAIN"]
+EMAIL = os.environ["EMAIL"]
+API_TOKEN = os.environ["API_TOKEN"]
+SHOPIFY_DOMAIN = os.environ["SHOPIFY_DOMAIN"]
+SHOPIFY_TOKEN = os.environ["SHOPIFY_TOKEN"]
 
-    resp = requests.get(zendesk_url, auth=auth)
+BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
+AUTH = (f"{EMAIL}/token", API_TOKEN)
+
+
+# ------------------------
+# Zendesk Helpers
+# ------------------------
+def zendesk_get(url):
+    resp = requests.get(url, auth=AUTH)
     if resp.status_code != 200:
-        sys.exit(f"❌ Failed to fetch ticket from Zendesk: {resp.status_code} - {resp.text}")
+        sys.exit(f"❌ Zendesk GET failed: {resp.status_code} - {resp.text}")
+    return resp.json()
 
-    ticket_data = resp.json()
-    subject = ticket_data['ticket']['subject']
 
-    # Extract order name like A#### from subject
-    import re
-    match = re.search(r"\bA\d{4,}\b", subject)
-    if not match:
-        sys.exit(f"❌ No order name found in ticket subject: {subject}")
+def get_ticket_comments(ticket_id):
+    url = f"{BASE_URL}/tickets/{ticket_id}/comments.json"
+    data = zendesk_get(url)
+    return data.get("comments", [])
 
-    order_name = match.group(0)
 
-    # Fetch Shopify order by name
-    shopify_url = f"https://{os.getenv('SHOPIFY_DOMAIN')}/admin/api/2024-07/orders.json?name={order_name}"
-    headers = {"X-Shopify-Access-Token": os.getenv("SHOPIFY_TOKEN")}
+# ------------------------
+# Shopify Helpers
+# ------------------------
+def get_shopify_order(order_name):
+    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2024-07/orders.json?name={order_name}"
+    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
+    resp = requests.get(url, headers=headers)
+    if resp.status_code != 200:
+        sys.exit(f"❌ Failed to fetch order from Shopify: {resp.status_code} - {resp.text}")
+    orders = resp.json().get("orders", [])
+    return orders[0] if orders else None
 
-    shopify_resp = requests.get(shopify_url, headers=headers)
-    if shopify_resp.status_code != 200:
-        sys.exit(f"❌ Failed to fetch order from Shopify: {shopify_resp.status_code} - {shopify_resp.text}")
 
-    orders = shopify_resp.json().get("orders", [])
-    if not orders:
+def update_shopify_order_note(order_id, note_text):
+    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2024-07/orders/{order_id}.json"
+    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
+    data = {"order": {"id": order_id, "note": note_text}}
+    resp = requests.put(url, headers=headers, json=data)
+    if resp.status_code != 200:
+        sys.exit(f"❌ Failed to update order note: {resp.status_code} - {resp.text}")
+    return True
+
+
+# ------------------------
+# Main Sync Logic
+# ------------------------
+def sync_note_to_shopify(ticket_id):
+    comments = get_ticket_comments(ticket_id)
+
+    # Find the first comment containing an order number like (A12345 ...)
+    order_name = None
+    note_text = None
+    for c in comments:
+        match = re.search(r"\(A\d{4,}.*?\)", c.get("body", ""))
+        if match:
+            full_match = match.group(0)        # e.g. (A12345 comment)
+            parts = full_match.strip("()").split(" ", 1)
+            order_name = parts[0]              # A12345
+            note_text = parts[1] if len(parts) > 1 else ""
+            break
+
+    if not order_name:
+        sys.exit(f"❌ No valid order pattern like (A12345 comment) found in ticket {ticket_id}")
+
+    # Fetch order from Shopify
+    order = get_shopify_order(order_name)
+    if not order:
         sys.exit(f"❌ No Shopify order found for {order_name}")
 
-    order_id = orders[0]['id']
+    # Update note on Shopify order
+    final_note = f"Zendesk ticket {ticket_id}: {note_text}".strip()
+    update_shopify_order_note(order["id"], final_note)
 
-    # Sync note to Shopify
-    note_text = f"Zendesk ticket: {ticket_id}"
-    update_url = f"https://{os.getenv('SHOPIFY_DOMAIN')}/admin/api/2024-07/orders/{order_id}.json"
-    update_data = {"order": {"id": order_id, "note": note_text}}
+    print(f"✅ Synced Zendesk note to Shopify order {order_name} → {final_note}")
 
-    update_resp = requests.put(update_url, headers=headers, json=update_data)
-    if update_resp.status_code != 200:
-        sys.exit(f"❌ Failed to update order note: {update_resp.status_code} - {update_resp.text}")
 
-    print(f"✅ Successfully synced note to Shopify order {order_name}")
-
+# ------------------------
+# CLI entrypoint
+# ------------------------
 if __name__ == "__main__":
     if len(sys.argv) < 3 or sys.argv[1] != "sync_note":
         sys.exit("Usage: python script.py sync_note <ticket_id>")
-    sync_order_note_from_zendesk(sys.argv[2])
+    sync_note_to_shopify(sys.argv[2])
