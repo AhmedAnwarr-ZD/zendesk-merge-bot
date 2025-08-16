@@ -100,35 +100,64 @@ def get_order_id_from_ticket(ticket):
     return match.group(1) if match else None
 
 
-def _extract_order_candidates(ticket):
-    """Extract possible order_id or order_name from subject/description for logging and resolution."""
+def _extract_order_candidates_from_text(text):
+    """Extract candidate order_id and order_name from arbitrary text."""
     import re
 
+    if not text:
+        return {"order_id": None, "order_name": None}
+
+    # Prefer explicit labels
+    id_labeled = re.search(r"\border\s*id\b\s*[:#-]?\s*(\d{10,20})", text, re.I)
+    name_labeled = re.search(r"\border\s*name\b\s*[:#-]?\s*([A-Za-z][A-Za-z0-9-#]{3,})", text, re.I)
+
+    # Generic patterns
+    numeric_name = re.search(r"#(\d{3,})", text)  # e.g., #12345
+    alpha_digit = re.search(r"\b([A-Za-z][0-9]{5,})\b", text)  # e.g., A266626
+    long_digits = re.search(r"\b(\d{10,20})\b", text)  # possible Shopify order id
+
+    order_id = (id_labeled.group(1) if id_labeled else None) or (long_digits.group(1) if long_digits else None)
+
+    order_name = None
+    if name_labeled:
+        order_name = name_labeled.group(1)
+    elif numeric_name:
+        order_name = f"#{numeric_name.group(1)}"
+    elif alpha_digit:
+        order_name = alpha_digit.group(1)
+
+    return {"order_id": order_id, "order_name": order_name}
+
+
+def _extract_order_candidates(ticket):
+    """Extract possible order_id or order_name from subject/description, tags, and custom_fields."""
     subject = ticket.get("subject", "") if isinstance(ticket, dict) else ""
     description = ticket.get("description", "") if isinstance(ticket, dict) else ""
     text = f"{subject}\n{description}"
 
-    # Prefer explicit labels
-    id_labeled = re.search(r"order\s*id\s*[:#-]?\s*(\d{10,20})", text, re.I)
-    name_labeled = re.search(r"order\s*name\s*[:#-]?\s*([A-Za-z][A-Za-z0-9-]+)", text, re.I)
+    result = _extract_order_candidates_from_text(text)
 
-    # Generic patterns
-    numeric_name = re.search(r"#(\d{3,})", text)  # e.g., #12345
-    alpha_numeric = re.search(r"\b([A-Za-z][A-Za-z0-9]{4,})\b", text)  # e.g., A266626
-    long_digits = re.search(r"\b(\d{10,20})\b", text)  # possible Shopify order id
+    # If not found, inspect tags and custom_fields
+    if not result["order_id"] or not result["order_name"]:
+        tags = ticket.get("tags") or []
+        for tag in tags:
+            found = _extract_order_candidates_from_text(str(tag))
+            result["order_id"] = result["order_id"] or found["order_id"]
+            result["order_name"] = result["order_name"] or found["order_name"]
+            if result["order_id"] and result["order_name"]:
+                break
 
-    order_id = (id_labeled.group(1) if id_labeled else None) or (long_digits.group(1) if long_digits else None)
-    order_name = (name_labeled.group(1) if name_labeled else None) or (numeric_name.group(1) if numeric_name else None)
+    if (not result["order_id"]) or (not result["order_name"]):
+        custom_fields = ticket.get("custom_fields") or []
+        for field in custom_fields:
+            value = field.get("value")
+            found = _extract_order_candidates_from_text(str(value))
+            result["order_id"] = result["order_id"] or found["order_id"]
+            result["order_name"] = result["order_name"] or found["order_name"]
+            if result["order_id"] and result["order_name"]:
+                break
 
-    # If numeric_name is matched via #12345, preserve the '#' for searching by name
-    if name_labeled is None and numeric_name:
-        order_name = f"#{numeric_name.group(1)}"
-    elif name_labeled:
-        order_name = name_labeled.group(1)
-    elif alpha_numeric:
-        order_name = alpha_numeric.group(1)
-
-    return {"order_id": order_id, "order_name": order_name}
+    return result
 
 
 def _resolve_order_id_from_name(order_name):
@@ -145,11 +174,13 @@ def _resolve_order_id_from_name(order_name):
     url = f"https://{domain}.myshopify.com/admin/api/2024-01/graphql.json"
 
     def query_for(candidate_name):
+        # Quote the name for Shopify search syntax
+        q = f"name:\"{candidate_name}\""
         query = {
             "query": (
                 "query($q: String!) { orders(first: 1, query: $q) { edges { node { id name } } } }"
             ),
-            "variables": {"q": f"name:{candidate_name}"},
+            "variables": {"q": q},
         }
         resp = requests.post(url, headers=headers, json=query, **_requests_verify_kwarg())
         resp.raise_for_status()
@@ -161,8 +192,7 @@ def _resolve_order_id_from_name(order_name):
         gid = node.get("id") or ""
         if gid.startswith("gid://shopify/Order/"):
             return gid.rsplit("/", 1)[-1]
-        # Fallback to id field if numeric
-        raw_id = node.get("id") or node.get("legacyResourceId")
+        raw_id = node.get("legacyResourceId") or node.get("id")
         return str(raw_id) if raw_id else None
 
     candidates = [order_name]
@@ -238,11 +268,30 @@ def upload_file_to_shopify_bytes(filename, file_bytes):
     return data.get("public_url") or data.get("url") or ""
 
 
+def _extract_from_comments_if_needed(ticket_id, current):
+    if current.get("order_id") and current.get("order_name"):
+        return current
+    try:
+        comments = _get_ticket_comments(ticket_id)
+    except Exception:
+        return current
+    for comment in comments[::-1]:  # newest first
+        text = (comment.get("body") or "") + "\n" + (comment.get("plain_body") or "")
+        found = _extract_order_candidates_from_text(text)
+        current["order_id"] = current.get("order_id") or found["order_id"]
+        current["order_name"] = current.get("order_name") or found["order_name"]
+        if current["order_id"] and current["order_name"]:
+            break
+    return current
+
+
 def sync_note(ticket_id):
     ticket = get_zendesk_ticket(ticket_id)
 
     # Extract order info from subject/description for logging and resolution
     candidates = _extract_order_candidates(ticket)
+    candidates = _extract_from_comments_if_needed(ticket_id, candidates)
+
     if candidates.get("order_id"):
         print(f"Found Shopify order id in note: {candidates['order_id']}")
     if candidates.get("order_name"):
@@ -251,7 +300,7 @@ def sync_note(ticket_id):
     # Legacy subject-based extraction
     order_id = get_order_id_from_ticket(ticket)
 
-    # Fallback to extracted id from body
+    # Fallback to extracted id from text
     if not order_id and candidates.get("order_id"):
         order_id = candidates["order_id"]
 
