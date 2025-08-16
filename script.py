@@ -49,10 +49,27 @@ def _get_required_config():
     }
 
 
+def _requests_verify_kwarg():
+    """Return a dict with a 'verify' key for requests, using certifi when available.
+
+    If ALLOW_INSECURE_SSL is set to a truthy value, disables verification.
+    """
+    allow_insecure = os.getenv("ALLOW_INSECURE_SSL", "").strip().lower() in {"1", "true", "yes"}
+    if allow_insecure:
+        # Caller may be in a constrained environment; explicitly disable verification
+        return {"verify": False}
+    try:
+        import certifi  # type: ignore
+        return {"verify": certifi.where()}
+    except Exception:
+        # Fallback to requests default behavior
+        return {}
+
+
 def get_zendesk_ticket(ticket_id):
     cfg = _get_required_config()
     url = f"https://{cfg['SUBDOMAIN']}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-    resp = requests.get(url, auth=(cfg["EMAIL"] + "/token", cfg["API_TOKEN"]))
+    resp = requests.get(url, auth=(cfg["EMAIL"] + "/token", cfg["API_TOKEN"]), **_requests_verify_kwarg())
     resp.raise_for_status()
     return resp.json()["ticket"]
 
@@ -79,7 +96,7 @@ def append_order_note(order_id, note_text):
         "Content-Type": "application/json",
     }
     payload = {"order": {"id": int(order_id), "note": note_text}}
-    resp = requests.put(url, headers=headers, json=payload)
+    resp = requests.put(url, headers=headers, json=payload, **_requests_verify_kwarg())
     resp.raise_for_status()
     return resp.json()
 

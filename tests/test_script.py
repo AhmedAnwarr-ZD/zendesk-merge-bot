@@ -51,9 +51,10 @@ def test_get_order_id_handles_missing_subject():
 def test_get_zendesk_ticket_success(monkeypatch):
     captured = {}
 
-    def fake_get(url, auth):
+    def fake_get(url, auth, **kwargs):
         captured["url"] = url
         captured["auth"] = auth
+        captured["kwargs"] = kwargs
         return DummyResponse(
             200,
             payload={
@@ -78,10 +79,11 @@ def test_get_zendesk_ticket_success(monkeypatch):
 def test_append_order_note_success(monkeypatch):
     captured = {}
 
-    def fake_put(url, headers, json):
+    def fake_put(url, headers, json, **kwargs):
         captured["url"] = url
         captured["headers"] = headers
         captured["json"] = json
+        captured["kwargs"] = kwargs
         return DummyResponse(200, payload={"order": {"id": json["order"]["id"]}})
 
     monkeypatch.setattr(script.requests, "put", fake_put)
