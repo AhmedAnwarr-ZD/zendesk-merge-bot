@@ -4,14 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'sync_note or retrieve_orders'
+        description: 'sync_note'
         required: true
       ticket_id:
         description: 'Zendesk ticket ID for sync_note'
-        required: false
-      identifier:
-        description: 'Customer email or phone for retrieve_orders'
-        required: false
+        required: true
 
 jobs:
   run-script:
@@ -26,9 +23,7 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt python-dotenv requests certifi
+        run: pip install requests python-dotenv
 
       - name: Run Zendesk → Shopify script
         env:
@@ -38,4 +33,4 @@ jobs:
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
           SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
         run: |
-          python script.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id || github.event.inputs.identifier }}
+          python script.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id }}
