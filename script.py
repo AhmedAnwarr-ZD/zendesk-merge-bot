@@ -21,9 +21,9 @@ def get_ticket_comments(ticket_id):
 
 def extract_order_and_comment(text):
     """
-    Extracts (A12345 comment text) pattern
+    Extracts order number like A12345 (or a12345) and the rest of the comment
     """
-    match = re.search(r"\((A\d+)\s+(.+?)\)", text)
+    match = re.search(r"\b([Aa]\d+)\b\s*(.*)", text)
     if match:
         return match.group(1), match.group(2)
     return None, None
