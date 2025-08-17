@@ -23,6 +23,47 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+# --- Helpers for API calls ---
+
+def zendesk_get(url):
+    """GET request to Zendesk API with error handling."""
+    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"❌ Zendesk API request failed: {e}")
+        try:
+            print("👉 Response body:", resp.json())
+        except Exception:
+            print("👉 Raw response:", resp.text)
+        raise
+    return resp.json()
+
+
+def shopify_post(query, variables=None):
+    """POST request to Shopify GraphQL API with error handling."""
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+
+    resp = requests.post(
+        SHOPIFY_GRAPHQL_URL,
+        headers=HEADERS,
+        json=payload,
+        verify=False
+    )
+
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"❌ Shopify API request failed: {e}")
+        try:
+            print("👉 Response body:", resp.json())
+        except Exception:
+            print("👉 Raw response:", resp.text)
+        raise
+    return resp.json()
+
 # --- Zendesk functions ---
 
 def get_latest_internal_note(ticket_id):
@@ -31,9 +72,7 @@ def get_latest_internal_note(ticket_id):
     Returns tuple: (order_name, agent_name, created_at, body)
     """
     url = f"{ZENDESK_API_URL}/tickets/{ticket_id}/audits.json"
-    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
-    resp.raise_for_status()
-    audits = resp.json().get("audits", [])
+    audits = zendesk_get(url).get("audits", [])
 
     latest_note = None
     for audit in audits:
@@ -49,13 +88,15 @@ def get_latest_internal_note(ticket_id):
                     latest_note = (order_name, agent_name, created_at, body)
     return latest_note
 
+
 def get_zendesk_user_name(user_id):
     """Fetch Zendesk agent name by ID."""
     url = f"{ZENDESK_API_URL}/users/{user_id}.json"
-    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
-    if resp.status_code == 200:
-        return resp.json().get("user", {}).get("name", "Unknown Agent")
-    return "Unknown Agent"
+    try:
+        resp = zendesk_get(url)
+        return resp.get("user", {}).get("name", "Unknown Agent")
+    except Exception:
+        return "Unknown Agent"
 
 # --- Shopify functions ---
 
@@ -75,14 +116,12 @@ def get_order_id_by_name(order_name):
       }
     }
     """
-    variables = {"name": order_name}
-    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": query, "variables": variables}, verify=False)
-    resp.raise_for_status()
-    data = resp.json()
+    data = shopify_post(query, {"name": order_name})
     edges = data.get("data", {}).get("orders", {}).get("edges", [])
     if edges:
         return edges[0]["node"]["id"]
     return None
+
 
 def append_order_timeline_comment(order_name, message):
     """
@@ -107,10 +146,7 @@ def append_order_timeline_comment(order_name, message):
       }
     }
     """
-    variables = {"input": {"id": order_id, "message": message}}
-    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": mutation, "variables": variables}, verify=False)
-    resp.raise_for_status()
-    result = resp.json()
+    result = shopify_post(mutation, {"input": {"id": order_id, "message": message}})
     errors = result.get("data", {}).get("orderTimelineCommentCreate", {}).get("userErrors", [])
     if errors:
         print(f"❌ Errors creating timeline comment for order {order_name}: {errors}")
@@ -127,7 +163,11 @@ def sync_note(ticket_id):
 
     order_name, agent_name, created_at, body = note
     # Format timestamp nicely
-    timestamp = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        timestamp = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        timestamp = created_at  # fallback to raw if parsing fails
+
     message = f"[Zendesk Internal Note]\nTicket #{ticket_id}\nBy: {agent_name} at {timestamp}\n\n{body}"
 
     append_order_timeline_comment(order_name, message)
