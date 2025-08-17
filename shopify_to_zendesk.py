@@ -7,9 +7,9 @@ SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
 SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 API_VERSION = "2025-07"
 
-ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
-ZENDESK_TOKEN = os.getenv("ZENDESK_TOKEN")
-ZENDESK_SUBDOMAIN = os.getenv("ZENDESK_SUBDOMAIN")
+ZENDESK_EMAIL = os.getenv("EMAIL")
+ZENDESK_TOKEN = os.getenv("API_TOKEN")
+ZENDESK_SUBDOMAIN = os.getenv("SUBDOMAIN")
 
 SHOPIFY_GRAPHQL_URL = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/{API_VERSION}/graphql.json"
 ZENDESK_TICKET_URL = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets"
