@@ -153,7 +153,7 @@ def sync_note(ticket_id: str):
     agent_abbrev = f"{parts[0]} {parts[1][0]}" if len(parts) >= 2 else parts[0]
 
     # Build final note
-    message_block = f"Ticket #{ticket_id} | {agent_abbrev} | {ts_date}\n\n{body}"
+    message_block = f"#{ticket_id} | {agent_abbrev} | {ts_date}\n\n{body}"
 
     # Debug info
     print(f"Debug: order_name={order_name}, agent={agent_abbrev}, ts_date={ts_date}")
