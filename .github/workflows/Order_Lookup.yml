@@ -1,29 +1,34 @@
-name: Shopify → Zendesk Order Lookup
+name: Shopify Order Lookup
 
 on:
-  workflow_dispatch:
-    inputs:
-      ticket_id:
-        description: "Zendesk Ticket ID"
-        required: true
-      customer_input:
-        description: "Customer email or phone (966... without +)"
-        required: true
+  repository_dispatch:
+    types: [shopify_order_lookup]
 
 jobs:
-  fetch-orders:
+  lookup:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
-      - run: pip install requests
-      - name: Run Shopify → Zendesk script
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run lookup script
         env:
-          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
-          SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
+          SHOPIFY_API_KEY: ${{ secrets.SHOPIFY_KEY }}
+          SHOPIFY_API_PASSWORD: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_STORE_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
           ZENDESK_EMAIL: ${{ secrets.EMAIL }}
-          ZENDESK_TOKEN: ${{ secrets.API_TOKEN }}
-          ZENDESK_SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
-        run: python shopify_to_zendesk.py ${{ github.event.inputs.ticket_id }} "${{ github.event.inputs.customer_input }}"
+          ZENDESK_API_TOKEN: ${{ secrets.API_TOKEN }}
+          ZENDESK_DOMAIN: ${{ secrets.SUBDOMAIN }}
+          TICKET_ID: ${{ github.event.client_payload.ticket_id }}
+          CUSTOMER_EMAIL: ${{ github.event.client_payload.customer_email }}
+          CUSTOMER_PHONE: ${{ github.event.client_payload.customer_phone }}
+        run: python scripts/shopify_lookup.py
