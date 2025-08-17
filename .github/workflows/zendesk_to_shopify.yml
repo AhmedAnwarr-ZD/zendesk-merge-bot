@@ -2,20 +2,17 @@ name: Zendesk → Shopify Auto Sync
 
 on:
   repository_dispatch:
-    types: [sync_zendesk_note]
+    types: [zendesk_ticket_note]
 
 jobs:
   sync-note:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.x'
-      - name: Install dependencies
-        run: pip install requests python-dotenv
+      - run: pip install requests python-dotenv
       - name: Run Zendesk → Shopify sync
         env:
           API_TOKEN: ${{ secrets.API_TOKEN }}
