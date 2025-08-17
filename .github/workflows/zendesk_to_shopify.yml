@@ -1,17 +1,11 @@
-name: Zendesk → Shopify Sync
+name: Zendesk → Shopify Auto Sync
 
 on:
-  workflow_dispatch:
-    inputs:
-      action:
-        description: 'sync_note'
-        required: true
-      ticket_id:
-        description: 'Zendesk ticket ID'
-        required: true
+  repository_dispatch:
+    types: [sync_zendesk_note]
 
 jobs:
-  run-script:
+  sync-note:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -22,13 +16,11 @@ jobs:
           python-version: '3.x'
       - name: Install dependencies
         run: pip install requests python-dotenv
-      - name: Install CA certificates
-        run: sudo apt-get update && sudo apt-get install -y ca-certificates
-      - name: Run script
+      - name: Run Zendesk → Shopify sync
         env:
           API_TOKEN: ${{ secrets.API_TOKEN }}
           EMAIL: ${{ secrets.EMAIL }}
           SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
           SHOPIFY_DOMAIN: ${{ secrets.SHOPIFY_DOMAIN }}
-        run: python script.py ${{ github.event.inputs.action }} ${{ github.event.inputs.ticket_id }}
+        run: python script.py sync_note ${{ github.event.client_payload.ticket_id }}
