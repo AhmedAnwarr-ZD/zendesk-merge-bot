@@ -6,7 +6,7 @@ from datetime import datetime
 
 # === Config ===
 SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")       # e.g. "yourstore.myshopify.com"
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_ADMIN_TOKEN")   # Admin API access token
+SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")   # Admin API access token
 API_VERSION = "2025-07"
 
 headers = {
