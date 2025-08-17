@@ -31,4 +31,4 @@ jobs:
           TICKET_ID: ${{ github.event.client_payload.ticket_id }}
           CUSTOMER_EMAIL: ${{ github.event.client_payload.customer_email }}
           CUSTOMER_PHONE: ${{ github.event.client_payload.customer_phone }}
-        run: python scripts/shopify_lookup.py
+        run: python shopify_to_zendesk.py
