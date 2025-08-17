@@ -204,8 +204,15 @@ def sync_note(ticket_id: str):
     if order_name and body.startswith(order_name):
         body = body[len(order_name):].strip()
 
+    # --- Abbreviate agent name: First + first letter of last ---
+    name_parts = agent.strip().split()
+    if len(name_parts) >= 2:
+        agent_abbrev = f"{name_parts[0]} {name_parts[1][0]}"
+    else:
+        agent_abbrev = name_parts[0]
+
     # Build message block in requested format
-    message_block = f"Ticket #{ticket_id}  | {agent} | {ts_date}\n\n{body}"
+    message_block = f"Ticket #{ticket_id} | {agent_abbrev} | {ts_date}\n\n{body}"
 
     # Update Shopify order note
     shopify_update_order_note(shop_order["id"], shop_order["note"], message_block)
@@ -213,7 +220,7 @@ def sync_note(ticket_id: str):
     # Append to metafield JSON log
     entry = {
         "ticket_id": str(ticket_id),
-        "author": agent,
+        "author": agent_abbrev,
         "note": body,
         "created_at": created_at,
     }
