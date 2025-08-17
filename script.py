@@ -3,6 +3,7 @@ import sys
 import requests
 import re
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load local .env if present
 load_dotenv()
@@ -24,36 +25,43 @@ HEADERS = {
 
 # --- Zendesk functions ---
 
-def get_zendesk_ticket(ticket_id):
-    url = f"{ZENDESK_API_URL}/tickets/{ticket_id}.json"
-    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
-    resp.raise_for_status()
-    return resp.json()["ticket"]
-
-def get_order_name_from_internal_notes(ticket_id):
+def get_latest_internal_note(ticket_id):
     """
-    Fetch ticket audits and extract Shopify order name from internal notes only.
-    Matches patterns like A123456 or a123456789.
+    Fetch the latest internal note (private comment) from ticket audits.
+    Returns tuple: (order_name, agent_name, created_at, body)
     """
     url = f"{ZENDESK_API_URL}/tickets/{ticket_id}/audits.json"
     resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
     resp.raise_for_status()
     audits = resp.json().get("audits", [])
 
+    latest_note = None
     for audit in audits:
         for event in audit.get("events", []):
             if event.get("type") == "Comment" and not event.get("public", True):
                 body = event.get("body", "")
                 match = re.search(r"\b[aA]\d+\b", body)
                 if match:
-                    return match.group(0)
-    return None
+                    order_name = match.group(0)
+                    created_at = audit.get("created_at", "")
+                    author_id = event.get("author_id")
+                    agent_name = get_zendesk_user_name(author_id)
+                    latest_note = (order_name, agent_name, created_at, body)
+    return latest_note
 
-# --- Shopify GraphQL functions ---
+def get_zendesk_user_name(user_id):
+    """Fetch Zendesk agent name by ID."""
+    url = f"{ZENDESK_API_URL}/users/{user_id}.json"
+    resp = requests.get(url, auth=(EMAIL + "/token", API_TOKEN), verify=False)
+    if resp.status_code == 200:
+        return resp.json().get("user", {}).get("name", "Unknown Agent")
+    return "Unknown Agent"
+
+# --- Shopify functions ---
 
 def get_order_id_by_name(order_name):
     """
-    Fetch Shopify order ID by name using GraphQL.
+    Fetch Shopify order ID by order name using GraphQL.
     """
     query = """
     query getOrderByName($name: String!) {
@@ -76,21 +84,21 @@ def get_order_id_by_name(order_name):
         return edges[0]["node"]["id"]
     return None
 
-def append_order_note(order_name, note_text):
+def append_order_timeline_comment(order_name, message):
     """
-    Append a note to a Shopify order using GraphQL mutation.
+    Append a timeline comment to a Shopify order.
     """
     order_id = get_order_id_by_name(order_name)
     if not order_id:
-        print(f"No Shopify order found for {order_name}")
+        print(f"❌ No Shopify order found for {order_name}")
         return
 
     mutation = """
-    mutation updateOrderNote($id: ID!, $note: String!) {
-      orderUpdate(input: {id: $id, note: $note}) {
-        order {
+    mutation orderTimelineCommentCreate($input: OrderTimelineCommentCreateInput!) {
+      orderTimelineCommentCreate(input: $input) {
+        timelineComment {
           id
-          note
+          message
         }
         userErrors {
           field
@@ -99,30 +107,30 @@ def append_order_note(order_name, note_text):
       }
     }
     """
-    variables = {"id": order_id, "note": note_text}
+    variables = {"input": {"id": order_id, "message": message}}
     resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=HEADERS, json={"query": mutation, "variables": variables}, verify=False)
     resp.raise_for_status()
     result = resp.json()
-    errors = result.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
+    errors = result.get("data", {}).get("orderTimelineCommentCreate", {}).get("userErrors", [])
     if errors:
-        print(f"Errors updating order {order_name}: {errors}")
+        print(f"❌ Errors creating timeline comment for order {order_name}: {errors}")
     else:
-        print(f"Order {order_name} updated successfully.")
+        print(f"✅ Timeline comment added to order {order_name}")
 
 # --- Main sync function ---
 
 def sync_note(ticket_id):
-    ticket = get_zendesk_ticket(ticket_id)
-    order_name = get_order_name_from_internal_notes(ticket_id)
-
-    if not order_name:
-        print(f"No Shopify order name found in internal notes of ticket {ticket_id}")
+    note = get_latest_internal_note(ticket_id)
+    if not note:
+        print(f"❌ No internal note with order number found in ticket {ticket_id}")
         return
 
-    comment_text = ticket.get("description", "")
-    final_note = f"Zendesk Ticket #{ticket_id}: {comment_text}"
-    append_order_note(order_name, final_note)
-    print(f"Synced ticket #{ticket_id} to Shopify order {order_name}")
+    order_name, agent_name, created_at, body = note
+    # Format timestamp nicely
+    timestamp = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    message = f"[Zendesk Internal Note]\nTicket #{ticket_id}\nBy: {agent_name} at {timestamp}\n\n{body}"
+
+    append_order_timeline_comment(order_name, message)
 
 # --- CLI entry point ---
 
