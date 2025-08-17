@@ -1,20 +1,18 @@
 import os
 import sys
 import re
-import json
 from datetime import datetime
 import requests
 
-# ========== ENV ==========
-EMAIL = os.getenv("EMAIL")                   # Zendesk email (agent) used with token auth
+# ================== ENV ==================
+EMAIL = os.getenv("EMAIL")                   # Zendesk email used with token
 API_TOKEN = os.getenv("API_TOKEN")           # Zendesk API token
-SUBDOMAIN = os.getenv("SUBDOMAIN")           # Zendesk subdomain (e.g., "acme" for acme.zendesk.com)
+SUBDOMAIN = os.getenv("SUBDOMAIN")           # Zendesk subdomain
 
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")   # Shopify Admin API access token
-SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN") # Shopify subdomain (e.g., "yourstore" for yourstore.myshopify.com)
+SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")   # Shopify Admin API token
+SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN") # Shopify domain
 
 API_VERSION = "2025-07"
-
 ZENDESK_API_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
 SHOPIFY_GRAPHQL_URL = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/{API_VERSION}/graphql.json"
 
@@ -23,7 +21,7 @@ SHOPIFY_HEADERS = {
     "Content-Type": "application/json",
 }
 
-# ========== HTTP HELPERS ==========
+# ================== HELPERS ==================
 def zendesk_get(url):
     resp = requests.get(url, auth=(f"{EMAIL}/token", API_TOKEN))
     resp.raise_for_status()
@@ -31,43 +29,32 @@ def zendesk_get(url):
 
 def shopify_post(query, variables=None):
     payload = {"query": query}
-    if variables is not None:
+    if variables:
         payload["variables"] = variables
     resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=SHOPIFY_HEADERS, json=payload)
     resp.raise_for_status()
-    data = resp.json()
-    if "errors" in data and data["errors"]:
-        raise RuntimeError(f"Shopify GraphQL returned errors: {data['errors']}")
-    return data
+    return resp.json()
 
-# ========== ZENDESK ==========
-ORDER_NAME_PATTERNS = [
-    re.compile(r"\b[Aa]\d{3,}\b"),
-    re.compile(r"#\d{3,}\b"),
-]
+# ================== ZENDESK ==================
+ORDER_PATTERN = re.compile(r"\b[Aa]\d+\b")
 
 def extract_order_name(text):
     if not text:
         return None
-    for pat in ORDER_NAME_PATTERNS:
-        m = pat.search(text)
-        if m:
-            val = m.group(0)
-            if val.lower().startswith("a"):
-                return "A" + val[1:]
-            return val
+    match = ORDER_PATTERN.search(text)
+    if match:
+        return "A" + match.group(0)[1:]  # normalize to uppercase A
     return None
 
 def get_latest_internal_note(ticket_id):
     audits_url = f"{ZENDESK_API_URL}/tickets/{ticket_id}/audits.json"
     audits = zendesk_get(audits_url).get("audits", [])
-
     latest = None
     for audit in audits:
         created_at = audit.get("created_at")
         for event in audit.get("events", []):
             if event.get("type") == "Comment" and not event.get("public", True):
-                body = event.get("body", "") or ""
+                body = event.get("body") or ""
                 order_name = extract_order_name(body)
                 author_id = event.get("author_id")
                 latest = {
@@ -79,18 +66,18 @@ def get_latest_internal_note(ticket_id):
     if not latest:
         return None
 
-    # Try to fetch agent name
+    # fetch agent name
     agent_name = "Unknown Agent"
-    if latest.get("author_id"):
-        try:
+    try:
+        if latest.get("author_id"):
             u = zendesk_get(f"{ZENDESK_API_URL}/users/{latest['author_id']}.json")
             agent_name = u.get("user", {}).get("name", agent_name)
-        except Exception:
-            pass
+    except:
+        pass
     latest["author_name"] = agent_name
     return latest
 
-# ========== SHOPIFY ==========
+# ================== SHOPIFY ==================
 def shopify_find_order(order_name):
     query = """
     query($q: String!) {
@@ -100,11 +87,6 @@ def shopify_find_order(order_name):
             id
             name
             note
-            metafield(namespace: "zendesk", key: "notes_log") {
-              id
-              type
-              value
-            }
           }
         }
       }
@@ -116,12 +98,7 @@ def shopify_find_order(order_name):
     if not edges:
         return None
     node = edges[0]["node"]
-    return {
-        "id": node["id"],
-        "name": node.get("name"),
-        "note": node.get("note") or "",
-        "notes_log": node.get("metafield"),
-    }
+    return {"id": node["id"], "name": node["name"], "note": node.get("note") or ""}
 
 def shopify_update_order_note(order_gid, old_note, message_block):
     combined = f"{old_note}\n---\n{message_block}".strip() if old_note else message_block
@@ -138,44 +115,11 @@ def shopify_update_order_note(order_gid, old_note, message_block):
     errs = data.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
     if errs:
         raise RuntimeError(f"Shopify orderUpdate errors: {errs}")
-    print("✅ Order note updated")
+    print("✅ Shopify order note updated successfully")
 
-def shopify_append_notes_log_metafield(order_gid, existing_mf, entry):
-    entries = []
-    if existing_mf and existing_mf.get("value") and existing_mf.get("type") == "json":
-        try:
-            entries = json.loads(existing_mf["value"])
-            if not isinstance(entries, list):
-                entries = []
-        except Exception:
-            entries = []
-    entries.append(entry)
-
-    mutation = """
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        metafields { id key namespace type value }
-        userErrors { field message }
-      }
-    }
-    """
-    variables = {
-        "metafields": [{
-            "ownerId": order_gid,
-            "namespace": "zendesk",
-            "key": "notes_log",
-            "type": "json",
-            "value": json.dumps(entries),
-        }]
-    }
-    data = shopify_post(mutation, variables)
-    errs = data.get("data", {}).get("metafieldsSet", {}).get("userErrors", [])
-    if errs:
-        raise RuntimeError(f"Shopify metafieldsSet errors: {errs}")
-    print("✅ Metafield (zendesk.notes_log) updated")
-
-# ========== MAIN ==========
+# ================== MAIN ==================
 def sync_note(ticket_id: str):
+    print(f"Debug: syncing ticket_id={ticket_id}")
     note = get_latest_internal_note(ticket_id)
     if not note:
         print(f"❌ No internal note found in Zendesk ticket {ticket_id}")
@@ -183,7 +127,7 @@ def sync_note(ticket_id: str):
 
     order_name = note.get("order_name")
     if not order_name:
-        print(f"❌ Could not detect a Shopify order name in the latest internal note of ticket {ticket_id}")
+        print(f"❌ Could not detect Shopify order name in ticket {ticket_id}")
         return
 
     shop_order = shopify_find_order(order_name)
@@ -194,41 +138,33 @@ def sync_note(ticket_id: str):
     created_at = note.get("created_at") or ""
     try:
         ts_date = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%Y-%m-%d")
-    except Exception:
+    except:
         ts_date = created_at.split("T")[0]
 
     agent = note.get("author_name", "Unknown Agent")
-    body = note.get("body", "").strip()
+    body = note.get("body").strip()
 
-    # Remove order number from start if present
+    # remove order number from start if present
     if order_name and body.startswith(order_name):
         body = body[len(order_name):].strip()
 
-    # --- Abbreviate agent name: First + first letter of last ---
-    name_parts = agent.strip().split()
-    if len(name_parts) >= 2:
-        agent_abbrev = f"{name_parts[0]} {name_parts[1][0]}"
-    else:
-        agent_abbrev = name_parts[0]
+    # Abbreviate agent name: First + first letter of last
+    parts = agent.split()
+    agent_abbrev = f"{parts[0]} {parts[1][0]}" if len(parts) >= 2 else parts[0]
 
-    # Build message block in requested format
+    # Build final note
     message_block = f"Ticket #{ticket_id} | {agent_abbrev} | {ts_date}\n\n{body}"
+
+    # Debug info
+    print(f"Debug: order_name={order_name}, agent={agent_abbrev}, ts_date={ts_date}")
+    print(f"Debug: message_block:\n{message_block}")
 
     # Update Shopify order note
     shopify_update_order_note(shop_order["id"], shop_order["note"], message_block)
 
-    # Append to metafield JSON log
-    entry = {
-        "ticket_id": str(ticket_id),
-        "author": agent_abbrev,
-        "note": body,
-        "created_at": created_at,
-    }
-    shopify_append_notes_log_metafield(shop_order["id"], shop_order["notes_log"], entry)
+    print(f"✅ Synced Zendesk ticket #{ticket_id} → Shopify order {shop_order['name']}")
 
-    print(f"✅ Synced Zendesk ticket #{ticket_id} → Shopify order {shop_order['name']} (Notes + Metafield)")
-
-# ========== CLI ==========
+# ================== CLI ==================
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python script.py sync_note <ticket_id>")
