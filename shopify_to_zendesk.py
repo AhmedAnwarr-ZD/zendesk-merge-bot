@@ -8,8 +8,8 @@ def get_env_var(name):
         return None
     return value.strip()
 
-SHOPIFY_STORE_DOMAIN = get_env_var("SHOPIFY_STORE_DOMAIN")
-SHOPIFY_API_PASSWORD = get_env_var("SHOPIFY_API_PASSWORD")
+SHOPIFY_STORE_DOMAIN = get_env_var("SHOPIFY_SHOP_DOMAIN")
+SHOPIFY_API_PASSWORD = get_env_var("SHOPIFY_ACCESS_TOKEN")
 ZENDESK_EMAIL = get_env_var("ZENDESK_EMAIL")
 ZENDESK_API_TOKEN = get_env_var("ZENDESK_API_TOKEN")
 ZENDESK_DOMAIN = get_env_var("ZENDESK_DOMAIN")
