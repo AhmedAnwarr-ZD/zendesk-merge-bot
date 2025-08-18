@@ -1,88 +1,94 @@
 import os
 import sys
 import requests
-import re
 
-def get_env_var(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise ValueError(f"❌ Missing required environment variable: {name}")
-    return value
+def get_shopify_orders(email=None, phone=None):
+    store_domain = os.getenv("SHOPIFY_STORE_DOMAIN")
+    api_password = os.getenv("SHOPIFY_API_PASSWORD")
 
-def get_shopify_domain() -> str:
-    shop_subdomain = get_env_var("SHOPIFY_SHOP_DOMAIN")
-    return f"{shop_subdomain}.myshopify.com"
-
-def get_shopify_headers() -> dict:
-    access_token = get_env_var("SHOPIFY_ACCESS_TOKEN")
-    return {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
-
-def fetch_orders_by_identifier(identifier: str):
-    """
-    Identifier can be:
-      - Order name (e.g. A266626)
-      - Phone number (e.g. 966550009712)
-      - Email address
-    """
-    shop_domain = get_shopify_domain()
-    headers = get_shopify_headers()
-
-    base_url = f"https://{shop_domain}/admin/api/2025-07/orders.json?status=any&limit=50"
-
-    if identifier.isdigit() or identifier.replace(" ", "").isdigit():
-        clean_phone = identifier.replace(" ", "")
-        url = f"{base_url}&phone={clean_phone}"
-    elif "@" in identifier:
-        url = f"{base_url}&email={identifier}"
-    else:
-        url = f"{base_url}&name={identifier}"
-
-    print(f"🔎 Fetching Shopify orders using: {url}")
-
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        orders = response.json().get("orders", [])
-        if not orders:
-            print("❌ No orders found for identifier:", identifier)
-            return []
-        return orders
-    except requests.exceptions.RequestException as e:
-        print("❌ Shopify API request failed:", e)
-        return []
-
-def format_order(order: dict) -> str:
-    """Format a single order into a readable text block."""
-    details = []
-    details.append(f"🛒 Order {order.get('name')} (ID: {order.get('id')})")
-    details.append(f"📅 Created: {order.get('created_at')}")
-    details.append(f"💳 Financial Status: {order.get('financial_status')}")
-    details.append(f"🚚 Fulfillment Status: {order.get('fulfillment_status')}")
-    details.append(f"📧 Email: {order.get('email')}")
-    details.append(f"📞 Phone: {order.get('phone')}")
-    details.append("🧾 Line Items:")
-    for item in order.get("line_items", []):
-        details.append(
-            f"   - {item.get('quantity')}x {item.get('title')} @ {item.get('price')} {order.get('currency')}"
-        )
-    details.append(f"💰 Total Price: {order.get('total_price')} {order.get('currency')}")
-    return "\n".join(details)
-
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python shopify_to_zendesk.py <identifier>")
+    if not store_domain or not api_password:
+        print("❌ Missing Shopify credentials.")
         sys.exit(1)
 
-    identifier = sys.argv[1]
-    orders = fetch_orders_by_identifier(identifier)
+    url = f"https://{store_domain}/admin/api/2025-07/orders.json"
+    params = {"status": "any", "limit": 5}
 
-    if orders:
-        print(f"✅ Found {len(orders)} order(s):\n")
-        for order in orders:
-            print(format_order(order))
-            print("-" * 40)
-    else:
-        print("❌ No matching orders found.")
+    if email:
+        params["email"] = email
+    if phone:
+        params["phone"] = phone
+
+    response = requests.get(url, params=params, auth=("api_key", api_password))
+    response.raise_for_status()
+    return response.json().get("orders", [])
+
+
+def add_comment_to_ticket(ticket_id, comment):
+    zendesk_domain = os.getenv("ZENDESK_DOMAIN")
+    zendesk_email = os.getenv("ZENDESK_EMAIL")
+    zendesk_token = os.getenv("ZENDESK_API_TOKEN")
+
+    if not zendesk_domain or not zendesk_email or not zendesk_token:
+        print("❌ Missing Zendesk credentials.")
+        sys.exit(1)
+
+    url = f"https://{zendesk_domain}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "ticket": {
+            "comment": {
+                "body": comment,
+                "public": False
+            }
+        }
+    }
+
+    response = requests.put(url, json=data, auth=(f"{zendesk_email}/token", zendesk_token))
+    response.raise_for_status()
+    return response.json()
+
+
+def format_order_summary(orders):
+    if not orders:
+        return "❌ No orders found for this customer."
+
+    summary_lines = []
+    for order in orders:
+        order_name = order.get("name", "Unknown")
+        financial_status = order.get("financial_status", "Unknown")
+        fulfillment_status = order.get("fulfillment_status", "Unfulfilled")
+        total_price = order.get("total_price", "0.00")
+        created_at = order.get("created_at", "Unknown date")
+
+        summary_lines.append(
+            f"🛒 Order {order_name} | Status: {financial_status}/{fulfillment_status} | "
+            f"Total: ${total_price} | Date: {created_at}"
+        )
+
+    return "\n".join(summary_lines)
+
 
 if __name__ == "__main__":
-    main()
+    ticket_id = os.getenv("TICKET_ID")
+    customer_email = os.getenv("CUSTOMER_EMAIL")
+    customer_phone = os.getenv("CUSTOMER_PHONE")
+
+    if not ticket_id:
+        print("❌ Missing required TICKET_ID.")
+        sys.exit(1)
+
+    if not (customer_email or customer_phone):
+        print("❌ Missing customer identifier (email/phone).")
+        sys.exit(1)
+
+    try:
+        orders = get_shopify_orders(email=customer_email, phone=customer_phone)
+        summary = format_order_summary(orders)
+        result = add_comment_to_ticket(ticket_id, summary)
+        print(f"✅ Added Shopify order lookup result to Zendesk ticket {ticket_id}")
+    except requests.HTTPError as e:
+        print(f"❌ API Error: {e.response.status_code} - {e.response.text}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Unexpected Error: {e}")
+        sys.exit(1)
