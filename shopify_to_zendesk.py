@@ -44,11 +44,14 @@ print("✅ Credentials loaded successfully.")
 print(f"Debug Info: STORE={SHOPIFY_STORE_DOMAIN}, ZD={ZENDESK_DOMAIN}, TICKET={TICKET_ID}")
 
 # ----------------- Fetch Zendesk Ticket -----------------
-ticket_url = f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/tickets/{TICKET_ID}.json"
 try:
-    resp = requests.get(ticket_url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=20)
-    resp.raise_for_status()
-    ticket = resp.json().get("ticket", {})
+    ticket_resp = requests.get(
+        f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/tickets/{TICKET_ID}.json",
+        auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+        timeout=20
+    )
+    ticket_resp.raise_for_status()
+    ticket = ticket_resp.json().get("ticket", {})
 except requests.exceptions.RequestException as e:
     print(f"❌ Error fetching ticket: {e}")
     sys.exit(1)
@@ -59,14 +62,17 @@ if channel not in ["web", "email", "whatsapp"]:
     print(f"ℹ️ Ticket type '{channel}' not supported, skipping.")
     sys.exit(0)
 
-# ----------------- Check for internal note containing "info" -----------------
+# ----------------- Check for internal note trigger -----------------
 try:
-    comments_url = f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/tickets/{TICKET_ID}/comments.json"
-    resp = requests.get(comments_url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=20)
-    resp.raise_for_status()
-    comments = resp.json().get("comments", [])
+    comments_resp = requests.get(
+        f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/tickets/{TICKET_ID}/comments.json",
+        auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+        timeout=20
+    )
+    comments_resp.raise_for_status()
+    comments = comments_resp.json().get("comments", [])
 except requests.exceptions.RequestException as e:
-    print(f"❌ Error fetching comments: {e}")
+    print(f"❌ Error fetching ticket comments: {e}")
     sys.exit(1)
 
 trigger_found = any(
@@ -84,10 +90,13 @@ if not requester_id:
     sys.exit(1)
 
 try:
-    user_url = f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/users/{requester_id}.json"
-    resp = requests.get(user_url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=20)
-    resp.raise_for_status()
-    user = resp.json().get("user", {})
+    user_resp = requests.get(
+        f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/users/{requester_id}.json",
+        auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+        timeout=20
+    )
+    user_resp.raise_for_status()
+    user = user_resp.json().get("user", {})
     full_name = user.get("name")
     end_user_email = user.get("email")
     end_user_phone = user.get("phone")
@@ -100,7 +109,6 @@ print(f"ℹ️ End-user found: {full_name} | {end_user_email} | {end_user_phone}
 # ----------------- Fetch Shopify Orders -----------------
 shopify_url = f"https://{SHOPIFY_STORE_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json"
 headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
-
 query_params = {"status": "any", "limit": 50}
 if end_user_email:
     query_params["email"] = end_user_email
@@ -146,7 +154,7 @@ lines = [
 ]
 
 if orders:
-    for order in orders[:5]:  # limit to latest 5
+    for order in orders[:5]:  # latest 5 orders
         order_name = order.get("name")
         order_id = order.get("id")
         order_link = f"https://{SHOPIFY_STORE_DOMAIN}.myshopify.com/admin/orders/{order_id}"
