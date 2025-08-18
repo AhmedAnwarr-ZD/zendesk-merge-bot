@@ -24,9 +24,6 @@ ZENDESK_API_TOKEN = get_env_var("ZENDESK_API_TOKEN")
 ZENDESK_DOMAIN = get_env_var("ZENDESK_DOMAIN")
 
 TICKET_ID = get_env_var("TICKET_ID")
-CUSTOMER_EMAIL = get_env_var("CUSTOMER_EMAIL")
-CUSTOMER_PHONE = get_env_var("CUSTOMER_PHONE")
-ORDER_NAME = get_env_var("ORDER_NAME")  # optional, like A12345
 
 # ----------------- Validate Credentials -----------------
 missing = []
@@ -46,31 +43,71 @@ if not TICKET_ID:
     print("❌ Missing TICKET_ID (required to update Zendesk).")
     sys.exit(1)
 
-if not (CUSTOMER_EMAIL or CUSTOMER_PHONE or ORDER_NAME):
-    print("❌ Missing customer identifier (need CUSTOMER_EMAIL, CUSTOMER_PHONE, or ORDER_NAME).")
-    sys.exit(1)
-
 print("✅ Credentials loaded successfully.")
 print(f"Debug Info: STORE={SHOPIFY_STORE_DOMAIN}, ZD={ZENDESK_DOMAIN}, TICKET={TICKET_ID}")
 
-# ----------------- Shopify API Request -----------------
+# ----------------- Fetch Zendesk Ticket -----------------
+zd_ticket_url = f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/tickets/{TICKET_ID}.json"
+
+try:
+    resp = requests.get(
+        zd_ticket_url,
+        auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+        timeout=20
+    )
+    resp.raise_for_status()
+    ticket = resp.json().get("ticket", {})
+except requests.exceptions.RequestException as e:
+    print(f"❌ Zendesk API error fetching ticket: {e}")
+    sys.exit(1)
+
+# ----------------- Check Ticket Type -----------------
+channel = ticket.get("via", {}).get("channel")
+if channel not in ["web", "email", "whatsapp"]:
+    print(f"ℹ️ Ticket type '{channel}' not supported, skipping.")
+    sys.exit(0)
+
+# ----------------- Find End-User Info from Comments -----------------
+end_user_email = None
+end_user_phone = None
+full_name = None
+
+try:
+    comments_url = f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/tickets/{TICKET_ID}/comments.json"
+    resp = requests.get(comments_url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=20)
+    resp.raise_for_status()
+    comments = resp.json().get("comments", [])
+except requests.exceptions.RequestException as e:
+    print(f"❌ Zendesk API error fetching comments: {e}")
+    sys.exit(1)
+
+# Look for internal note with "info"
+for comment in comments:
+    if not comment.get("public") and "info" in comment.get("body", "").lower():
+        full_name = comment.get("author", {}).get("name")
+        end_user_email = comment.get("author", {}).get("email")
+        end_user_phone = comment.get("author", {}).get("phone")
+        break
+
+if not (end_user_email or end_user_phone):
+    print("❌ No end-user info found in internal notes containing 'info'.")
+    sys.exit(0)
+
+print(f"ℹ️ End-user found: {full_name} | {end_user_email} | {end_user_phone}")
+
+# ----------------- Fetch Shopify Orders -----------------
 shopify_url = f"https://{SHOPIFY_STORE_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json"
 headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
 
-# Base query params for first request
 query_params = {"status": "any", "limit": 50}
-if CUSTOMER_EMAIL:
-    query_params["email"] = CUSTOMER_EMAIL
-if ORDER_NAME:
-    query_params["name"] = ORDER_NAME
+if end_user_email:
+    query_params["email"] = end_user_email
 
-# Fetch orders with proper pagination
 orders = []
 page_info = None
 
 try:
     while True:
-        # First request uses query_params; next pages use only page_info
         if page_info:
             params = {"page_info": page_info}  # must only include page_info
         else:
@@ -81,7 +118,7 @@ try:
         data = resp.json().get("orders", [])
         orders.extend(data)
 
-        # Check for next page
+        # Next page check
         link_header = resp.headers.get("Link")
         if link_header and 'rel="next"' in link_header:
             match = re.search(r'page_info=([^&>]+)', link_header)
@@ -91,10 +128,10 @@ try:
         else:
             break
 
-    # Manual filtering by phone if provided
-    if CUSTOMER_PHONE:
-        customer_phone_norm = normalize_phone(CUSTOMER_PHONE)
-        orders = [o for o in orders if normalize_phone(o.get("phone")) == customer_phone_norm]
+    # Manual filtering by phone
+    if end_user_phone:
+        phone_norm = normalize_phone(end_user_phone)
+        orders = [o for o in orders if normalize_phone(o.get("phone")) == phone_norm]
 
 except requests.exceptions.RequestException as e:
     print(f"❌ Shopify API error: {e}")
@@ -102,17 +139,24 @@ except requests.exceptions.RequestException as e:
 
 # ----------------- Build Zendesk Note -----------------
 if not orders:
-    note = f"No Shopify orders found for {CUSTOMER_EMAIL or CUSTOMER_PHONE or ORDER_NAME}"
+    note = f"No Shopify orders found for {full_name or end_user_email or end_user_phone}"
 else:
-    lines = [f"📦 Shopify orders for {CUSTOMER_EMAIL or CUSTOMER_PHONE or ORDER_NAME}:"]
-    for order in orders:
-        lines.append(
-            f"- Order {order.get('name')} (ID: {order.get('id')}) | "
-            f"Created: {order.get('created_at')} | "
-            f"Total: {order.get('total_price')} {order.get('currency')}"
-        )
-        for item in order.get("line_items", []):
-            lines.append(f"    • {item.get('quantity')} x {item.get('name')} @ {item.get('price')} {order.get('currency')}")
+    lines = [
+        f"📦 Shopify Customer Profile:",
+        f"Full Name: {full_name or 'N/A'}",
+        f"Email: {end_user_email or 'N/A'}",
+        f"Phone: {end_user_phone or 'N/A'}",
+        f"Number of Orders: {len(orders)}",
+        "",
+        "Orders:"
+    ]
+    for order in orders[:5]:  # limit to latest 5 orders
+        order_name = order.get("name")
+        order_id = order.get("id")
+        order_link = f"https://{SHOPIFY_STORE_DOMAIN}.myshopify.com/admin/orders/{order_id}"
+        order_email = order.get("email", end_user_email or "N/A")
+        order_phone = order.get("phone", end_user_phone or "N/A")
+        lines.append(f"- [{order_name}]({order_link}) - Email: {order_email} - Phone: {order_phone}")
     note = "\n".join(lines)
 
 print(f"ℹ️ Adding note to Zendesk ticket {TICKET_ID}:\n{note}")
