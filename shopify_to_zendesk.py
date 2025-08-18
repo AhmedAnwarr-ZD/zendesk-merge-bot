@@ -54,32 +54,34 @@ print("✅ Credentials loaded successfully.")
 print(f"Debug Info: STORE={SHOPIFY_STORE_DOMAIN}, ZD={ZENDESK_DOMAIN}, TICKET={TICKET_ID}")
 
 # ----------------- Shopify API Request -----------------
-shopify_url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2025-07/orders.json"
+shopify_url = f"https://{SHOPIFY_STORE_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json"
 headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
 
-# Base query params
+# Base query params for first request
 query_params = {"status": "any", "limit": 50}
 if CUSTOMER_EMAIL:
     query_params["email"] = CUSTOMER_EMAIL
 if ORDER_NAME:
     query_params["name"] = ORDER_NAME
 
-# Fetch orders with pagination
+# Fetch orders with proper pagination
 orders = []
 page_info = None
 
 try:
     while True:
-        params = query_params.copy()
+        # First request uses query_params; next pages use only page_info
         if page_info:
-            params['page_info'] = page_info
-        
+            params = {"page_info": page_info}  # must only include page_info
+        else:
+            params = query_params.copy()
+
         resp = requests.get(shopify_url, headers=headers, params=params, timeout=20)
         resp.raise_for_status()
         data = resp.json().get("orders", [])
         orders.extend(data)
 
-        # Check for pagination
+        # Check for next page
         link_header = resp.headers.get("Link")
         if link_header and 'rel="next"' in link_header:
             match = re.search(r'page_info=([^&>]+)', link_header)
