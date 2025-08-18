@@ -1,94 +1,117 @@
 import os
 import sys
 import requests
+import re
 
-def get_shopify_orders(email=None, phone=None):
-    store_domain = os.getenv("SHOPIFY_STORE_DOMAIN")
-    api_password = os.getenv("SHOPIFY_API_PASSWORD")
+# ------------------------------
+# Load environment variables
+# ------------------------------
+SHOPIFY_STORE_DOMAIN = os.getenv("SHOPIFY_STORE_DOMAIN")
+SHOPIFY_API_PASSWORD = os.getenv("SHOPIFY_API_PASSWORD")
+ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
+ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN")
+ZENDESK_DOMAIN = os.getenv("ZENDESK_DOMAIN")
 
-    if not store_domain or not api_password:
-        print("❌ Missing Shopify credentials.")
-        sys.exit(1)
+# Optional fallback identifiers
+TICKET_ID = os.getenv("TICKET_ID")
+CUSTOMER_EMAIL = os.getenv("CUSTOMER_EMAIL")
+CUSTOMER_PHONE = os.getenv("CUSTOMER_PHONE")
 
-    url = f"https://{store_domain}/admin/api/2025-07/orders.json"
-    params = {"status": "any", "limit": 5}
+# ------------------------------
+# Validate credentials
+# ------------------------------
+if not all([SHOPIFY_STORE_DOMAIN, SHOPIFY_API_PASSWORD, ZENDESK_EMAIL, ZENDESK_API_TOKEN, ZENDESK_DOMAIN]):
+    print("❌ Missing Shopify or Zendesk credentials.")
+    sys.exit(1)
 
-    if email:
-        params["email"] = email
-    if phone:
-        params["phone"] = phone
+# ------------------------------
+# Get identifier from args or env
+# ------------------------------
+identifier = None
+if len(sys.argv) > 1 and sys.argv[1].strip() != "":
+    identifier = sys.argv[1].strip()
+else:
+    # Fall back to env variables
+    identifier = CUSTOMER_EMAIL or CUSTOMER_PHONE or TICKET_ID
 
-    response = requests.get(url, params=params, auth=("api_key", api_password))
+if not identifier:
+    print("❌ Missing identifier (email, phone, or ticket id).")
+    sys.exit(1)
+
+# ------------------------------
+# Shopify API call
+# ------------------------------
+SHOPIFY_URL = f"https://{SHOPIFY_STORE_DOMAIN}.myshopify.com/admin/api/2025-07/orders.json"
+
+params = {"status": "any", "limit": 50}
+
+if re.match(r"^\d+$", identifier):  # Order ID (numeric)
+    params["name"] = identifier
+elif "@" in identifier:  # Email
+    params["email"] = identifier
+elif identifier.startswith("966"):  # Phone number
+    params["phone"] = identifier
+else:
+    params["name"] = identifier  # fallback
+
+try:
+    response = requests.get(
+        SHOPIFY_URL,
+        auth=("admin", SHOPIFY_API_PASSWORD),
+        params=params,
+        timeout=20,
+        verify=False  # ⚠️ skip SSL check if needed
+    )
     response.raise_for_status()
-    return response.json().get("orders", [])
+except requests.exceptions.RequestException as e:
+    print(f"❌ Shopify API request failed: {e}")
+    sys.exit(1)
 
+orders = response.json().get("orders", [])
 
-def add_comment_to_ticket(ticket_id, comment):
-    zendesk_domain = os.getenv("ZENDESK_DOMAIN")
-    zendesk_email = os.getenv("ZENDESK_EMAIL")
-    zendesk_token = os.getenv("ZENDESK_API_TOKEN")
+if not orders:
+    print(f"⚠️ No orders found for identifier: {identifier}")
+    sys.exit(0)
 
-    if not zendesk_domain or not zendesk_email or not zendesk_token:
-        print("❌ Missing Zendesk credentials.")
-        sys.exit(1)
+# ------------------------------
+# Prepare Zendesk comment
+# ------------------------------
+order_comments = []
+for order in orders:
+    order_id = order.get("name", "N/A")
+    order_total = order.get("total_price", "0")
+    order_status = order.get("fulfillment_status", "Unfulfilled")
+    order_comments.append(f"🛒 Order {order_id} | Total: {order_total} | Status: {order_status}")
 
-    url = f"https://{zendesk_domain}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "ticket": {
-            "comment": {
-                "body": comment,
-                "public": False
-            }
+comment_body = "\n".join(order_comments)
+
+# ------------------------------
+# Post comment to Zendesk ticket
+# ------------------------------
+if not TICKET_ID:
+    print("⚠️ No Zendesk TICKET_ID provided, skipping Zendesk update.")
+    print("Preview Comment:\n", comment_body)
+    sys.exit(0)
+
+zendesk_url = f"https://{ZENDESK_DOMAIN}.zendesk.com/api/v2/tickets/{TICKET_ID}.json"
+payload = {
+    "ticket": {
+        "comment": {
+            "body": comment_body,
+            "public": False
         }
     }
+}
 
-    response = requests.put(url, json=data, auth=(f"{zendesk_email}/token", zendesk_token))
-    response.raise_for_status()
-    return response.json()
-
-
-def format_order_summary(orders):
-    if not orders:
-        return "❌ No orders found for this customer."
-
-    summary_lines = []
-    for order in orders:
-        order_name = order.get("name", "Unknown")
-        financial_status = order.get("financial_status", "Unknown")
-        fulfillment_status = order.get("fulfillment_status", "Unfulfilled")
-        total_price = order.get("total_price", "0.00")
-        created_at = order.get("created_at", "Unknown date")
-
-        summary_lines.append(
-            f"🛒 Order {order_name} | Status: {financial_status}/{fulfillment_status} | "
-            f"Total: ${total_price} | Date: {created_at}"
-        )
-
-    return "\n".join(summary_lines)
-
-
-if __name__ == "__main__":
-    ticket_id = os.getenv("TICKET_ID")
-    customer_email = os.getenv("CUSTOMER_EMAIL")
-    customer_phone = os.getenv("CUSTOMER_PHONE")
-
-    if not ticket_id:
-        print("❌ Missing required TICKET_ID.")
-        sys.exit(1)
-
-    if not (customer_email or customer_phone):
-        print("❌ Missing customer identifier (email/phone).")
-        sys.exit(1)
-
-    try:
-        orders = get_shopify_orders(email=customer_email, phone=customer_phone)
-        summary = format_order_summary(orders)
-        result = add_comment_to_ticket(ticket_id, summary)
-        print(f"✅ Added Shopify order lookup result to Zendesk ticket {ticket_id}")
-    except requests.HTTPError as e:
-        print(f"❌ API Error: {e.response.status_code} - {e.response.text}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Unexpected Error: {e}")
-        sys.exit(1)
+try:
+    zd_resp = requests.put(
+        zendesk_url,
+        json=payload,
+        auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+        timeout=20
+    )
+    zd_resp.raise_for_status()
+    print(f"✅ Successfully added Shopify order details to Zendesk ticket {TICKET_ID}")
+except requests.exceptions.RequestException as e:
+    print(f"❌ Failed to update Zendesk ticket: {e}")
+    sys.exit(1)
