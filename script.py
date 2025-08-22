@@ -57,13 +57,16 @@ def sync_note(ticket_id):
     # ✅ fetch only latest private note
     note_text, agent_id = get_latest_private_note(ticket_id)
     if not note_text:
-        raise Exception("No private note found.")
+        raise Exception("No private note found in Zendesk.")
 
     ts_date = datetime.now().strftime("%Y-%m-%d")
 
-    # extract order name like "A273302"
+    # extract order name like "A265253"
     match = re.search(r"([A-Z0-9]+)", note_text)
-    order_name = match.group(1) if match else None
+    if not match:
+        raise Exception("Could not detect order number in note text.")
+    
+    order_name = match.group(1).strip()
 
     message_block = f"#{ticket_id} | {agent_id} | {ts_date}\n\n{note_text}"
 
@@ -71,13 +74,15 @@ def sync_note(ticket_id):
     print("Debug: message_block:")
     print(message_block)
 
-    if not order_name:
-        raise Exception("Could not detect order number in note text.")
-
-    # ✅ Get Shopify order by name
+    # ✅ Search Shopify order by name using query API
     url = f"https://{SHOPIFY_DOMAIN}/admin/api/2023-10/orders.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
-    resp = requests.get(url, headers=headers, params={"name": order_name})
+    params = {
+        "query": f"name:{order_name}",
+        "status": "any"  # includes open, closed, cancelled orders
+    }
+
+    resp = requests.get(url, headers=headers, params=params)
     resp.raise_for_status()
     orders = resp.json().get("orders", [])
 
@@ -86,7 +91,7 @@ def sync_note(ticket_id):
 
     shop_order = orders[0]
 
-    # ✅ override the note with private note
+    # ✅ Update Shopify note
     shopify_update_order_note(shop_order["id"], message_block)
 
 
