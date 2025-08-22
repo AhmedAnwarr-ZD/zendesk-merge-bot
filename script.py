@@ -117,7 +117,6 @@ def shopify_update_order_note(order_gid, old_note, message_block):
     """
     return combined, mutation
     
-    """
     variables = {"input": {"id": order_gid, "note": combined}}
     data = shopify_post(mutation, variables)
     errs = data.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
