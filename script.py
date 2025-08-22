@@ -75,15 +75,21 @@ def sync_note(ticket_id):
 
     ts_date = datetime.now().strftime("%Y-%m-%d")
 
-    # extract order name like "A273302"
-    match = re.search(r"([A-Z0-9]+)", note_text)
+    # get agent name from ID
+    agent_name = get_agent_name(agent_id)
+
+    # extract order name from note or other reliable source
+    # Adjust regex if order number format is different
+    match = re.search(r"([A-Z]\d+)", note_text)
     if not match:
         raise Exception("Could not detect order number in note text.")
     order_name = match.group(1).strip()
 
-    message_block = f"#{ticket_id} | {agent_id} | {ts_date}\n\n{note_text}"
+    # Build message block without including order number in the note
+    # Only include ticket info, agent name, and timestamp
+    message_block = f"#{ticket_id} | {agent_name} | {ts_date}\n\n{note_text}"
 
-    print(f"Debug: order_name={order_name}, agent={agent_id}, ts_date={ts_date}")
+    print(f"Debug: order_name={order_name}, agent={agent_name}, ts_date={ts_date}")
     print("Debug: message_block:")
     print(message_block)
 
