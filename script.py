@@ -100,14 +100,8 @@ def shopify_find_order(order_name):
     node = edges[0]["node"]
     return {"id": node["id"], "name": node["name"], "note": node.get("note") or ""}
 
-def shopify_update_order_note(order_gid, old_note, message_block):
-    # Always ensure timeline separation by exactly 1 blank line
-    old_note = (old_note or "").rstrip()  # trim trailing spaces/newlines
-    if old_note:
-        combined = f"{old_note}\n\n{message_block}"
-    else:
-        combined = message_block
-
+def update_order_note(order_gid, new_note):
+    """Overrides an order note in Shopify with the new note only."""
     mutation = """
     mutation orderUpdate($input: OrderInput!) {
       orderUpdate(input: $input) {
@@ -116,15 +110,15 @@ def shopify_update_order_note(order_gid, old_note, message_block):
       }
     }
     """
-
-    variables = {"input": {"id": order_gid, "note": combined}}
+    variables = {"input": {"id": order_gid, "note": new_note}}
     data = shopify_post(mutation, variables)
+
     errs = data.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
     if errs:
         raise RuntimeError(f"Shopify orderUpdate errors: {errs}")
 
-    print("✅ Shopify order note updated successfully")
-    return combined
+    print(f"✅ Order note updated: {new_note}")
+    return data
 
 # ================== MAIN ==================
 def sync_note(ticket_id: str):
