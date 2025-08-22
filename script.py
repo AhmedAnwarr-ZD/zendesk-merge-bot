@@ -101,9 +101,10 @@ def shopify_find_order(order_name):
     return {"id": node["id"], "name": node["name"], "note": node.get("note") or ""}
 
 def shopify_update_order_note(order_gid, old_note, message_block):
-    # Put old note first (if it exists), then a blank line, then new note
+    # Always ensure timeline separation by exactly 1 blank line
+    old_note = (old_note or "").rstrip()  # trim trailing spaces/newlines
     if old_note:
-        combined = f"{old_note}\n\n\n{message_block}"
+        combined = f"{old_note}\n\n{message_block}"
     else:
         combined = message_block
 
