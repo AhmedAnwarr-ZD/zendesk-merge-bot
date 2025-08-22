@@ -6,7 +6,7 @@ import argparse
 # ----------------------------
 # Config
 # ----------------------------
-SHOPIFY_SHOP = os.getenv("SHOPIFY_SHOP")  # e.g. "aleena-fashion"
+SHOPIFY_SHOP = os.getenv("SHOPIFY_DOMAIN")  # e.g. "aleena-fashion"
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
 ZENDESK_SUBDOMAIN = os.getenv("SUBDOMAIN")
 ZENDESK_EMAIL = os.getenv("EMAIL")
