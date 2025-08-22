@@ -8,9 +8,9 @@ import argparse
 # ----------------------------
 SHOPIFY_SHOP = os.getenv("SHOPIFY_SHOP")  # e.g. "aleena-fashion"
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
-ZENDESK_SUBDOMAIN = os.getenv("ZENDESK_SUBDOMAIN")
-ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
-ZENDESK_TOKEN = os.getenv("ZENDESK_TOKEN")
+ZENDESK_SUBDOMAIN = os.getenv("SUBDOMAIN")
+ZENDESK_EMAIL = os.getenv("EMAIL")
+ZENDESK_TOKEN = os.getenv("API_TOKEN")
 
 # ----------------------------
 # Shopify Helpers
