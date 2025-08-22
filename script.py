@@ -1,87 +1,34 @@
 import os
-import sys
-import re
-from datetime import datetime
 import requests
+import datetime
+import argparse
 
-# ================== ENV ==================
-EMAIL = os.getenv("EMAIL")                   # Zendesk email used with token
-API_TOKEN = os.getenv("API_TOKEN")           # Zendesk API token
-SUBDOMAIN = os.getenv("SUBDOMAIN")           # Zendesk subdomain
+# ----------------------------
+# Config
+# ----------------------------
+SHOPIFY_SHOP = os.getenv("SHOPIFY_SHOP")  # e.g. "aleena-fashion"
+SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
+ZENDESK_SUBDOMAIN = os.getenv("ZENDESK_SUBDOMAIN")
+ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
+ZENDESK_TOKEN = os.getenv("ZENDESK_TOKEN")
 
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")   # Shopify Admin API token
-SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN") # Shopify domain
-
-API_VERSION = "2025-07"
-ZENDESK_API_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
-SHOPIFY_GRAPHQL_URL = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/{API_VERSION}/graphql.json"
-
-SHOPIFY_HEADERS = {
-    "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-    "Content-Type": "application/json",
-}
-
-# ================== HELPERS ==================
-def zendesk_get(url):
-    resp = requests.get(url, auth=(f"{EMAIL}/token", API_TOKEN))
-    resp.raise_for_status()
-    return resp.json()
-
+# ----------------------------
+# Shopify Helpers
+# ----------------------------
 def shopify_post(query, variables=None):
-    payload = {"query": query}
-    if variables:
-        payload["variables"] = variables
-    resp = requests.post(SHOPIFY_GRAPHQL_URL, headers=SHOPIFY_HEADERS, json=payload)
+    url = f"https://{SHOPIFY_SHOP}.myshopify.com/admin/api/2024-01/graphql.json"
+    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
+    resp = requests.post(url, headers=headers, json={"query": query, "variables": variables})
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    if "errors" in data:
+        raise RuntimeError(f"Shopify GraphQL errors: {data['errors']}")
+    return data
 
-# ================== ZENDESK ==================
-ORDER_PATTERN = re.compile(r"\b[Aa]\d+\b")
-
-def extract_order_name(text):
-    if not text:
-        return None
-    match = ORDER_PATTERN.search(text)
-    if match:
-        return "A" + match.group(0)[1:]  # normalize to uppercase A
-    return None
-
-def get_latest_internal_note(ticket_id):
-    audits_url = f"{ZENDESK_API_URL}/tickets/{ticket_id}/audits.json"
-    audits = zendesk_get(audits_url).get("audits", [])
-    latest = None
-    for audit in audits:
-        created_at = audit.get("created_at")
-        for event in audit.get("events", []):
-            if event.get("type") == "Comment" and not event.get("public", True):
-                body = event.get("body") or ""
-                order_name = extract_order_name(body)
-                author_id = event.get("author_id")
-                latest = {
-                    "order_name": order_name,
-                    "body": body,
-                    "author_id": author_id,
-                    "created_at": created_at,
-                }
-    if not latest:
-        return None
-
-    # fetch agent name
-    agent_name = "Unknown Agent"
-    try:
-        if latest.get("author_id"):
-            u = zendesk_get(f"{ZENDESK_API_URL}/users/{latest['author_id']}.json")
-            agent_name = u.get("user", {}).get("name", agent_name)
-    except:
-        pass
-    latest["author_name"] = agent_name
-    return latest
-
-# ================== SHOPIFY ==================
-def shopify_find_order(order_name):
+def get_order_by_name(order_name: str):
     query = """
-    query($q: String!) {
-      orders(first: 1, query: $q) {
+    query ($query: String) {
+      orders(first: 1, query: $query) {
         edges {
           node {
             id
@@ -92,16 +39,12 @@ def shopify_find_order(order_name):
       }
     }
     """
-    variables = {"q": f"name:{order_name}"}
-    data = shopify_post(query, variables)
-    edges = data.get("data", {}).get("orders", {}).get("edges", [])
-    if not edges:
-        return None
-    node = edges[0]["node"]
-    return {"id": node["id"], "name": node["name"], "note": node.get("note") or ""}
+    data = shopify_post(query, {"query": f"name:{order_name}"})
+    edges = data["data"]["orders"]["edges"]
+    return edges[0]["node"] if edges else None
 
 def update_order_note(order_gid, new_note):
-    """Overrides an order note in Shopify with the new note only."""
+    """Overrides order note in Shopify with new note only."""
     mutation = """
     mutation orderUpdate($input: OrderInput!) {
       orderUpdate(input: $input) {
@@ -120,63 +63,64 @@ def update_order_note(order_gid, new_note):
     print(f"✅ Order note updated: {new_note}")
     return data
 
-# ================== MAIN ==================
+# ----------------------------
+# Zendesk Helpers
+# ----------------------------
+def zendesk_get(path):
+    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2{path}"
+    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN))
+    resp.raise_for_status()
+    return resp.json()
+
+def get_ticket(ticket_id: str):
+    return zendesk_get(f"/tickets/{ticket_id}.json")["ticket"]
+
+def get_ticket_comments(ticket_id: str):
+    return zendesk_get(f"/tickets/{ticket_id}/comments.json")["comments"]
+
+# ----------------------------
+# Core Function
+# ----------------------------
 def sync_note(ticket_id: str):
-    print(f"Debug: syncing ticket_id={ticket_id}")
-    note = get_latest_internal_note(ticket_id)
-    if not note:
-        print(f"❌ No internal note found in Zendesk ticket {ticket_id}")
-        return
+    ticket = get_ticket(ticket_id)
+    comments = get_ticket_comments(ticket_id)
 
-    order_name = note.get("order_name")
+    order_name = ticket["custom_fields"][0]["value"] if ticket["custom_fields"] else None
     if not order_name:
-        print(f"❌ Could not detect Shopify order name in ticket {ticket_id}")
-        return
+        raise RuntimeError("No Shopify order number found in ticket custom fields.")
 
-    shop_order = shopify_find_order(order_name)
+    shop_order = get_order_by_name(order_name)
     if not shop_order:
-        print(f"❌ Shopify order not found for name {order_name}")
-        return
+        raise RuntimeError(f"Shopify order {order_name} not found")
 
-    created_at = note.get("created_at") or ""
-    try:
-        ts_date = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%Y-%m-%d")
-    except:
-        ts_date = created_at.split("T")[0]
+    latest_comment = comments[-1]
+    agent = latest_comment["author_id"]
+    body = latest_comment["plain_body"].strip()
+    ts = datetime.datetime.strptime(latest_comment["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+    ts_date = ts.strftime("%Y-%m-%d")
 
-    agent = note.get("author_name", "Unknown Agent")
-    body = note.get("body").strip()
+    # For simplicity: just use agent id as abbrev
+    agent_abbrev = str(agent)
 
-    # remove order number from start if present
-    if order_name and body.startswith(order_name):
-        body = body[len(order_name):].strip()
-
-    # Abbreviate agent name: First + first letter of last
-    parts = agent.split()
-    agent_abbrev = f"{parts[0]} {parts[1][0]}" if len(parts) >= 2 else parts[0]
-
-    # Build final note
+    # Final note format
     message_block = f"#{ticket_id} | {agent_abbrev} | {ts_date}\n\n{body}"
 
-    # Debug info
     print(f"Debug: order_name={order_name}, agent={agent_abbrev}, ts_date={ts_date}")
     print(f"Debug: message_block:\n{message_block}")
 
-    # Update Shopify order note
-    shopify_update_order_note(shop_order["id"], shop_order["note"], message_block)
+    # Override Shopify note
+    update_order_note(shop_order["id"], message_block)
 
     print(f"✅ Synced Zendesk ticket #{ticket_id} → Shopify order {shop_order['name']}")
 
-# ================== CLI ==================
+# ----------------------------
+# CLI
+# ----------------------------
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python script.py sync_note <ticket_id>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=["sync_note"])
+    parser.add_argument("ticket_id")
+    args = parser.parse_args()
 
-    action = sys.argv[1]
-    if action != "sync_note":
-        print(f"Action '{action}' not supported.")
-        sys.exit(1)
-
-    ticket_id = sys.argv[2]
-    sync_note(ticket_id)
+    if args.command == "sync_note":
+        sync_note(args.ticket_id)
