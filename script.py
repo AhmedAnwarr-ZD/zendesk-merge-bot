@@ -109,7 +109,7 @@ def sync_note(ticket_id: str):
     print(f"Debug: message_block:\n{message_block}")
 
     # Override Shopify note
-    update_order_note(shop_order["id"], message_block)
+    shopify_update_order_note(shop_order["id"], message_block)
 
     print(f"✅ Synced Zendesk ticket #{ticket_id} → Shopify order {shop_order['name']}")
 
