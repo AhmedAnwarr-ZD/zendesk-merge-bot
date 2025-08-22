@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
@@ -31,14 +32,21 @@ def shopify_update_order_note(order_id, new_note):
     print(f"✅ Shopify note updated for order {order_id}")
 
 # -----------------------------------
-# Zendesk helper to fetch ticket info
+# Zendesk helper: fetch latest private note
 # -----------------------------------
-def get_ticket(ticket_id):
-    url = f"https://shopaleena.zendesk.com/api/v2/tickets/{ticket_id}.json"
+def get_latest_private_note(ticket_id):
+    url = f"https://shopaleena.zendesk.com/api/v2/tickets/{ticket_id}/audits.json"
     auth = (f"{EMAIL}/token", API_TOKEN)
     resp = requests.get(url, auth=auth)
     resp.raise_for_status()
-    return resp.json()["ticket"]
+    audits = resp.json().get("audits", [])
+
+    # find latest private note
+    for audit in reversed(audits):
+        for ev in audit.get("events", []):
+            if ev.get("type") == "Comment" and ev.get("public") is False:
+                return ev.get("body", ""), audit.get("author_id")
+    return None, None
 
 # -----------------------------------
 # Sync logic: override note in Shopify
@@ -46,18 +54,27 @@ def get_ticket(ticket_id):
 def sync_note(ticket_id):
     print(f"Debug: syncing ticket_id={ticket_id}")
 
-    ticket = get_ticket(ticket_id)
-    order_name = ticket.get("external_id") or ticket.get("subject") or "Unknown"
-    agent = ticket.get("assignee_id", "Unknown")
+    # ✅ fetch only latest private note
+    note_text, agent_id = get_latest_private_note(ticket_id)
+    if not note_text:
+        raise Exception("No private note found.")
+
     ts_date = datetime.now().strftime("%Y-%m-%d")
 
-    message_block = f"#{ticket_id} | {agent} | {ts_date}\n\n{ticket['description']}"
+    # extract order name like "A273302"
+    match = re.search(r"([A-Z0-9]+)", note_text)
+    order_name = match.group(1) if match else None
 
-    print(f"Debug: order_name={order_name}, agent={agent}, ts_date={ts_date}")
+    message_block = f"#{ticket_id} | {agent_id} | {ts_date}\n\n{note_text}"
+
+    print(f"Debug: order_name={order_name}, agent={agent_id}, ts_date={ts_date}")
     print("Debug: message_block:")
     print(message_block)
 
-    # Get Shopify order by name
+    if not order_name:
+        raise Exception("Could not detect order number in note text.")
+
+    # ✅ Get Shopify order by name
     url = f"https://{SHOPIFY_DOMAIN}/admin/api/2023-10/orders.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
     resp = requests.get(url, headers=headers, params={"name": order_name})
@@ -69,7 +86,7 @@ def sync_note(ticket_id):
 
     shop_order = orders[0]
 
-    # ✅ Now override the note with our block
+    # ✅ override the note with private note
     shopify_update_order_note(shop_order["id"], message_block)
 
 
