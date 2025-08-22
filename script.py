@@ -6,17 +6,17 @@ import argparse
 # ----------------------------
 # Config
 # ----------------------------
-SHOPIFY_SHOP = os.getenv("SHOPIFY_DOMAIN")  # e.g. "aleena-fashion"
+SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")  # e.g. "aleena-fashion"
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
-ZENDESK_SUBDOMAIN = os.getenv("SUBDOMAIN")
-ZENDESK_EMAIL = os.getenv("EMAIL")
-ZENDESK_TOKEN = os.getenv("API_TOKEN")
+SUBDOMAIN = os.getenv("SUBDOMAIN")
+EMAIL = os.getenv("EMAIL")
+TOKEN = os.getenv("API_TOKEN")
 
 # ----------------------------
 # Shopify Helpers
 # ----------------------------
 def shopify_post(query, variables=None):
-    url = f"https://{SHOPIFY_SHOP}.myshopify.com/admin/api/2024-01/graphql.json"
+    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/graphql.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
     resp = requests.post(url, headers=headers, json={"query": query, "variables": variables})
     resp.raise_for_status()
@@ -67,8 +67,8 @@ def shopify_update_order_note(order_gid, message_block):
 # Zendesk Helpers
 # ----------------------------
 def zendesk_get(path):
-    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2{path}"
-    resp = requests.get(url, auth=(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN))
+    url = f"https://{SUBDOMAIN}.zendesk.com/api/v2{path}"
+    resp = requests.get(url, auth=(f"{EMAIL}/token", API_TOKEN))
     resp.raise_for_status()
     return resp.json()
 
