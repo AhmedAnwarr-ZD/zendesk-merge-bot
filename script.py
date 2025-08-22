@@ -49,6 +49,17 @@ def get_latest_private_note(ticket_id):
     return None, None
 
 # -----------------------------------
+# Zendesk helper: fetch agent name by ID
+# -----------------------------------
+def get_agent_name(agent_id):
+    url = f"https://shopaleena.zendesk.com/api/v2/users/{agent_id}.json"
+    auth = (f"{EMAIL}/token", API_TOKEN)
+    resp = requests.get(url, auth=auth)
+    resp.raise_for_status()
+    user = resp.json().get("user", {})
+    return user.get("name", f"Agent {agent_id}")
+
+# -----------------------------------
 # Shopify helper: find order by name
 # -----------------------------------
 def shopify_get_order_by_name(order_name):
@@ -78,15 +89,13 @@ def sync_note(ticket_id):
     # get agent name from ID
     agent_name = get_agent_name(agent_id)
 
-    # extract order name from note or other reliable source
-    # Adjust regex if order number format is different
+    # extract order name like "A273302" (adjust regex to your format)
     match = re.search(r"([A-Z]\d+)", note_text)
     if not match:
         raise Exception("Could not detect order number in note text.")
     order_name = match.group(1).strip()
 
     # Build message block without including order number in the note
-    # Only include ticket info, agent name, and timestamp
     message_block = f"#{ticket_id} | {agent_name} | {ts_date}\n\n{note_text}"
 
     print(f"Debug: order_name={order_name}, agent={agent_name}, ts_date={ts_date}")
