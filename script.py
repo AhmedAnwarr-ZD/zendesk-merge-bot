@@ -43,8 +43,10 @@ def get_order_by_name(order_name: str):
     edges = data["data"]["orders"]["edges"]
     return edges[0]["node"] if edges else None
 
-def update_order_note(order_gid, new_note):
-    """Overrides order note in Shopify with new note only."""
+def shopify_update_order_note(order_gid, message_block):
+    """
+    Update Shopify order note by overriding the existing note.
+    """
     mutation = """
     mutation orderUpdate($input: OrderInput!) {
       orderUpdate(input: $input) {
@@ -53,15 +55,13 @@ def update_order_note(order_gid, new_note):
       }
     }
     """
-    variables = {"input": {"id": order_gid, "note": new_note}}
-    data = shopify_post(mutation, variables)
 
+    variables = {"input": {"id": order_gid, "note": message_block}}
+    data = shopify_post(mutation, variables)
     errs = data.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
     if errs:
         raise RuntimeError(f"Shopify orderUpdate errors: {errs}")
-
-    print(f"✅ Order note updated: {new_note}")
-    return data
+    print("✅ Shopify order note updated successfully")
 
 # ----------------------------
 # Zendesk Helpers
