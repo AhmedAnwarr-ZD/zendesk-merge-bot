@@ -1,126 +1,84 @@
 import os
+import sys
 import requests
-import datetime
-import argparse
+from datetime import datetime
+from dotenv import load_dotenv
 
-# ----------------------------
-# Config
-# ----------------------------
-SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")  # e.g. "aleena-fashion"
+load_dotenv()
+
+# ---- Shopify credentials ----
+SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
+
+# ---- Zendesk credentials ----
 SUBDOMAIN = os.getenv("SUBDOMAIN")
 EMAIL = os.getenv("EMAIL")
-TOKEN = os.getenv("API_TOKEN")
+API_TOKEN = os.getenv("API_TOKEN")
 
-# ----------------------------
-# Shopify Helpers
-# ----------------------------
-def shopify_post(query, variables=None):
-    url = f"https://{SHOPIFY_DOMAIN}.myshopify.com/admin/api/2024-01/graphql.json"
-    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
-    resp = requests.post(url, headers=headers, json={"query": query, "variables": variables})
-    resp.raise_for_status()
-    data = resp.json()
-    if "errors" in data:
-        raise RuntimeError(f"Shopify GraphQL errors: {data['errors']}")
-    return data
-
-def get_order_by_name(order_name: str):
-    query = """
-    query ($query: String) {
-      orders(first: 1, query: $query) {
-        edges {
-          node {
-            id
-            name
-            note
-          }
-        }
-      }
+# -----------------------------------
+# Shopify helper to update order note
+# -----------------------------------
+def shopify_update_order_note(order_id, new_note):
+    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2023-10/orders/{order_id}.json"
+    headers = {
+        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+        "Content-Type": "application/json",
     }
-    """
-    data = shopify_post(query, {"query": f"name:{order_name}"})
-    edges = data["data"]["orders"]["edges"]
-    return edges[0]["node"] if edges else None
+    payload = {"order": {"id": order_id, "note": new_note}}
+    resp = requests.put(url, headers=headers, json=payload)
 
-def shopify_update_order_note(order_gid, message_block):
-    """
-    Update Shopify order note by overriding the existing note.
-    """
-    mutation = """
-    mutation orderUpdate($input: OrderInput!) {
-      orderUpdate(input: $input) {
-        order { id note }
-        userErrors { field message }
-      }
-    }
-    """
+    if resp.status_code not in (200, 201):
+        raise Exception(f"Shopify update failed: {resp.status_code}, {resp.text}")
+    print(f"✅ Shopify note updated for order {order_id}")
 
-    variables = {"input": {"id": order_gid, "note": message_block}}
-    data = shopify_post(mutation, variables)
-    errs = data.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
-    if errs:
-        raise RuntimeError(f"Shopify orderUpdate errors: {errs}")
-    print("✅ Shopify order note updated successfully")
-
-# ----------------------------
-# Zendesk Helpers
-# ----------------------------
-def zendesk_get(path):
-    url = f"https://{SUBDOMAIN}.zendesk.com/api/v2{path}"
-    resp = requests.get(url, auth=(f"{EMAIL}/token", API_TOKEN))
+# -----------------------------------
+# Zendesk helper to fetch ticket info
+# -----------------------------------
+def get_ticket(ticket_id):
+    url = f"https://{SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+    auth = (f"{EMAIL}/token", API_TOKEN)
+    resp = requests.get(url, auth=auth)
     resp.raise_for_status()
-    return resp.json()
+    return resp.json()["ticket"]
 
-def get_ticket(ticket_id: str):
-    return zendesk_get(f"/tickets/{ticket_id}.json")["ticket"]
+# -----------------------------------
+# Sync logic: override note in Shopify
+# -----------------------------------
+def sync_note(ticket_id):
+    print(f"Debug: syncing ticket_id={ticket_id}")
 
-def get_ticket_comments(ticket_id: str):
-    return zendesk_get(f"/tickets/{ticket_id}/comments.json")["comments"]
-
-# ----------------------------
-# Core Function
-# ----------------------------
-def sync_note(ticket_id: str):
     ticket = get_ticket(ticket_id)
-    comments = get_ticket_comments(ticket_id)
+    order_name = ticket.get("external_id") or ticket.get("subject") or "Unknown"
+    agent = ticket.get("assignee_id", "Unknown")
+    ts_date = datetime.now().strftime("%Y-%m-%d")
 
-    order_name = ticket["custom_fields"][0]["value"] if ticket["custom_fields"] else None
-    if not order_name:
-        raise RuntimeError("No Shopify order number found in ticket custom fields.")
+    message_block = f"#{ticket_id} | {agent} | {ts_date}\n\n{ticket['description']}"
 
-    shop_order = get_order_by_name(order_name)
-    if not shop_order:
-        raise RuntimeError(f"Shopify order {order_name} not found")
+    print(f"Debug: order_name={order_name}, agent={agent}, ts_date={ts_date}")
+    print("Debug: message_block:")
+    print(message_block)
 
-    latest_comment = comments[-1]
-    agent = latest_comment["author_id"]
-    body = latest_comment["plain_body"].strip()
-    ts = datetime.datetime.strptime(latest_comment["created_at"], "%Y-%m-%dT%H:%M:%SZ")
-    ts_date = ts.strftime("%Y-%m-%d")
+    # Get Shopify order by name
+    url = f"https://{SHOPIFY_DOMAIN}/admin/api/2023-10/orders.json"
+    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
+    resp = requests.get(url, headers=headers, params={"name": order_name})
+    resp.raise_for_status()
+    orders = resp.json().get("orders", [])
 
-    # For simplicity: just use agent id as abbrev
-    agent_abbrev = str(agent)
+    if not orders:
+        raise Exception(f"No Shopify order found for {order_name}")
 
-    # Final note format
-    message_block = f"#{ticket_id} | {agent_abbrev} | {ts_date}\n\n{body}"
+    shop_order = orders[0]
 
-    print(f"Debug: order_name={order_name}, agent={agent_abbrev}, ts_date={ts_date}")
-    print(f"Debug: message_block:\n{message_block}")
-
-    # Override Shopify note
+    # ✅ Now override the note with our block
     shopify_update_order_note(shop_order["id"], message_block)
 
-    print(f"✅ Synced Zendesk ticket #{ticket_id} → Shopify order {shop_order['name']}")
 
-# ----------------------------
-# CLI
-# ----------------------------
+# -----------------------------------
+# Entrypoint
+# -----------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["sync_note"])
-    parser.add_argument("ticket_id")
-    args = parser.parse_args()
-
-    if args.command == "sync_note":
-        sync_note(args.ticket_id)
+    if len(sys.argv) >= 3 and sys.argv[1] == "sync_note":
+        sync_note(int(sys.argv[2]))
+    else:
+        print("Usage: python script.py sync_note <ticket_id>")
