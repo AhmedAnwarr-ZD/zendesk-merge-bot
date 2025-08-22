@@ -115,15 +115,15 @@ def shopify_update_order_note(order_gid, old_note, message_block):
       }
     }
     """
-    return combined, mutation
-    
+
     variables = {"input": {"id": order_gid, "note": combined}}
     data = shopify_post(mutation, variables)
     errs = data.get("data", {}).get("orderUpdate", {}).get("userErrors", [])
     if errs:
         raise RuntimeError(f"Shopify orderUpdate errors: {errs}")
-    print("✅ Shopify order note updated successfully")
 
+    print("✅ Shopify order note updated successfully")
+    return combined
 # ================== MAIN ==================
 def sync_note(ticket_id: str):
     print(f"Debug: syncing ticket_id={ticket_id}")
