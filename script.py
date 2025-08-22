@@ -101,7 +101,12 @@ def shopify_find_order(order_name):
     return {"id": node["id"], "name": node["name"], "note": node.get("note") or ""}
 
 def shopify_update_order_note(order_gid, old_note, message_block):
-    combined = f"{old_note}\n{message_block}".strip() if old_note else message_block
+    # Put old note first (if it exists), then a blank line, then new note
+    if old_note:
+        combined = f"{old_note}\n\n{message_block}"
+    else:
+        combined = message_block
+
     mutation = """
     mutation orderUpdate($input: OrderInput!) {
       orderUpdate(input: $input) {
@@ -109,6 +114,9 @@ def shopify_update_order_note(order_gid, old_note, message_block):
         userErrors { field message }
       }
     }
+    """
+    return combined, mutation
+    
     """
     variables = {"input": {"id": order_gid, "note": combined}}
     data = shopify_post(mutation, variables)
