@@ -11,7 +11,6 @@ SHOPIFY_DOMAIN = os.getenv("SHOPIFY_DOMAIN")
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
 
 # ---- Zendesk credentials ----
-SUBDOMAIN = os.getenv("SUBDOMAIN")
 EMAIL = os.getenv("EMAIL")
 API_TOKEN = os.getenv("API_TOKEN")
 
@@ -35,7 +34,7 @@ def shopify_update_order_note(order_id, new_note):
 # Zendesk helper to fetch ticket info
 # -----------------------------------
 def get_ticket(ticket_id):
-    url = f"https://{SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+    url = f"https://shopaleena.zendesk.com/api/v2/tickets/{ticket_id}.json"
     auth = (f"{EMAIL}/token", API_TOKEN)
     resp = requests.get(url, auth=auth)
     resp.raise_for_status()
