@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import time
+import re
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,10 +27,10 @@ BACKOFF_MULTIPLIER = 2
 
 last_api_call_time = 0
 
-INCLUDE_VIA = "include=via_source"  # <-- force Zendesk to return via.source.{from,rel}
-
-DEBUG_DUMP_LIMIT = 5  # how many unmatched 'via' payloads to print for inspection
-debug_dumped = 0
+# Regexes to extract parent id from comment bodies
+URL_TICKET_RE   = re.compile(rf"https://{re.escape(SUBDOMAIN)}\.zendesk\.com/(?:hc/en-us/requests|agent/tickets)/(\d+)")
+HASH_TICKET_RE  = re.compile(r"ticket\s*#\s*(\d+)", re.IGNORECASE)
+LABEL_TICKET_RE = re.compile(r"ticket\s*:\s*(\d+)", re.IGNORECASE)
 
 def wait_for_rate_limit():
     global last_api_call_time
@@ -109,14 +110,14 @@ def get_tickets_from_view(view_id):
     return tickets
 
 def get_ticket(ticket_id):
-    # IMPORTANT: include=via_source to expand via.source.from / via.source.rel
-    url = f"{BASE_URL}/tickets/{ticket_id}.json?{INCLUDE_VIA}"
+    # Try to get full via; Zendesk may still omit source.from
+    url = f"{BASE_URL}/tickets/{ticket_id}.json?include=via_source"
     data = zendesk_get_with_retry(url)
     return data.get("ticket") if data else None
 
 def get_ticket_audits(ticket_id):
-    # include=via_source also works on audits
-    url = f"{BASE_URL}/tickets/{ticket_id}/audits.json?{INCLUDE_VIA}"
+    # Audits often carry the parent link in the initial comment
+    url = f"{BASE_URL}/tickets/{ticket_id}/audits.json?include=via_source"
     data = zendesk_get_with_retry(url)
     return data.get("audits", []) if data else []
 
@@ -144,57 +145,71 @@ def add_internal_note(ticket_id, body):
 # ---------- Parent detection helpers ----------
 def parent_from_ticket_via(ticket_obj):
     """
-    Prefer the direct 'via' path when present on /tickets/{id}.json.
-    We accept:
-      - via.channel in {"side_conversation", "side_conversation_ticket"}
-      - OR via.source.rel == "side_conversation" (some tenants return 'api' channel)
+    Use ticket.via if it actually contains a parent.
     """
     via = ticket_obj.get("via") or {}
     channel = (via.get("channel") or "").lower()
     src = (via.get("source") or {})
-    rel = (src.get("rel") or "").lower()
+    rel = (src.get("rel") or "")
     from_obj = (src.get("from") or {})
-    from_type = (from_obj.get("type") or "").lower()
+    from_type = (from_obj.get("type") or "")
     parent_id = from_obj.get("id")
 
-    is_sc_channel = channel in ("side_conversation", "side_conversation_ticket")
-    is_sc_rel = rel == "side_conversation"
+    if (channel in ("side_conversation", "side_conversation_ticket") or str(rel).lower() == "side_conversation"):
+        if str(from_type).lower() == "ticket" and parent_id:
+            try:
+                return int(parent_id)
+            except (TypeError, ValueError):
+                return None
+    return None
 
-    if (is_sc_channel or is_sc_rel) and from_type == "ticket" and parent_id:
-        try:
-            return int(parent_id)
-        except (TypeError, ValueError):
-            return None
+def _extract_parent_id_from_text(txt):
+    if not txt:
+        return None
+    # Try URL pattern first
+    m = URL_TICKET_RE.search(txt)
+    if m:
+        return int(m.group(1))
+    # Then "ticket #12345"
+    m = HASH_TICKET_RE.search(txt)
+    if m:
+        return int(m.group(1))
+    # Then "ticket: 12345"
+    m = LABEL_TICKET_RE.search(txt)
+    if m:
+        return int(m.group(1))
     return None
 
 def parent_from_audits(ticket_id):
     """
-    Fallback: scan audits; find a side-conversation creation audit,
-    then read source.from.id. (Audits sometimes mark channel 'api' with rel 'side_conversation'.)
+    Fallback: parse audits' comment bodies for a link/reference to the parent ticket.
+    The first audit usually has a system-inserted blurb linking back to the parent.
     """
     audits = get_ticket_audits(ticket_id)
-    for audit in audits:
-        via = audit.get("via") or {}
-        channel = (via.get("channel") or "").lower()
-        src = (via.get("source") or {})
-        rel = (src.get("rel") or "").lower()
-        from_obj = (src.get("from") or {})
-        from_type = (from_obj.get("type") or "").lower()
-        parent_id = from_obj.get("id")
-
-        is_sc_channel = channel in ("side_conversation", "side_conversation_ticket")
-        is_sc_rel = rel == "side_conversation"
-
-        if (is_sc_channel or is_sc_rel) and from_type == "ticket" and parent_id:
-            try:
-                return int(parent_id)
-            except (TypeError, ValueError):
+    # Scan in chronological order (oldest first)
+    for audit in sorted(audits, key=lambda a: a.get("id", 0)):
+        # Each audit has an 'events' array; find Comment events
+        for ev in audit.get("events", []):
+            if ev.get("type") != "Comment":
                 continue
+            parent = _extract_parent_id_from_text(ev.get("html_body")) or _extract_parent_id_from_text(ev.get("body"))
+            if parent:
+                return parent
+        # Also try the audit-level 'via' in case it holds a rel only
+        via = audit.get("via") or {}
+        src = via.get("source") or {}
+        from_obj = src.get("from") or {}
+        if str(src.get("rel") or "").lower() == "side_conversation" and str(from_obj.get("type") or "").lower() == "ticket":
+            pid = from_obj.get("id")
+            if pid:
+                try:
+                    return int(pid)
+                except (TypeError, ValueError):
+                    pass
     return None
 
 # ---------- Mapping using robust per-ticket fetch ----------
 def build_parent_child_mapping(child_tickets):
-    global debug_dumped
     mapping = {}
     child_ids = [int(t["id"]) for t in child_tickets]
     logging.info(f"Looking for parents of {len(child_ids)} child tickets")
@@ -209,16 +224,14 @@ def build_parent_child_mapping(child_tickets):
             parent_id = parent_from_ticket_via(t)
 
         if not parent_id:
-            # Fallback to audits only if needed
             parent_id = parent_from_audits(cid)
 
         if parent_id:
             mapping[str(cid)] = parent_id
         else:
-            # dump the via we actually got for debugging (first few only)
-            if t and debug_dumped < DEBUG_DUMP_LIMIT:
-                logging.warning("DEBUG via for child %s: %s", cid, t.get("via"))
-                debug_dumped += 1
+            # One-time peek at via for visibility
+            via = (t or {}).get("via")
+            logging.warning("DEBUG via for child %s: %s", cid, via)
 
         if checked % 25 == 0 or checked == len(child_ids):
             logging.info(f"Checked {checked} child tickets, mapped {len(mapping)} parents so far")
