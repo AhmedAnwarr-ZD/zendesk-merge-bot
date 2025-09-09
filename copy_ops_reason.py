@@ -1,8 +1,7 @@
 import os
 import logging
 import requests
-import json
-import re
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,158 +16,287 @@ API_TOKEN = os.environ["API_TOKEN"]
 BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
 AUTH = (f"{EMAIL}/token", API_TOKEN)
 
-VIEW_ID = 27529425733661
 OPS_ESCALATION_REASON_ID = 20837946693533
+VIEW_ID = 27529425733661  # Ops Escalation Reason Empty
 
-def get_json(url):
-    """Simple API call"""
-    try:
-        resp = requests.get(url, auth=AUTH)
-        return resp.json() if resp.status_code == 200 else None
-    except:
-        return None
+# Rate limiting config
+RATE_LIMIT_DELAY = 0.2
+MAX_RETRIES = 3
+BACKOFF_MULTIPLIER = 2
 
-def find_parent_ticket_id(ticket_id):
-    """Try multiple methods to find parent ticket ID"""
-    
-    print(f"\n=== FINDING PARENT FOR TICKET {ticket_id} ===")
-    
-    # Method 1: Check ticket via field
-    print("Method 1: Checking ticket.via...")
-    ticket_data = get_json(f"{BASE_URL}/tickets/{ticket_id}.json")
-    if ticket_data:
-        via = ticket_data.get('ticket', {}).get('via', {})
-        print(f"Via structure: {json.dumps(via, indent=2)}")
-        
-        # Extract from via.source.from.id if available
-        from_obj = via.get('source', {}).get('from', {})
-        if from_obj.get('type') == 'ticket' and from_obj.get('id'):
-            parent_id = from_obj['id']
-            print(f"✅ Found parent {parent_id} in via.source.from.id")
-            return parent_id
-    
-    # Method 2: Check ticket audits for first comment
-    print("Method 2: Checking first audit comment...")
-    audits_data = get_json(f"{BASE_URL}/tickets/{ticket_id}/audits.json")
-    if audits_data:
-        audits = audits_data.get('audits', [])
-        if audits:
-            # Check first audit (creation)
-            first_audit = audits[0]
-            for event in first_audit.get('events', []):
-                if event.get('type') == 'Comment':
-                    body = event.get('body', '') + ' ' + event.get('html_body', '')
-                    print(f"First comment preview: {body[:200]}")
-                    
-                    # Look for ticket ID patterns
-                    patterns = [
-                        rf'https://{SUBDOMAIN}\.zendesk\.com/(?:agent/tickets|hc/en-us/requests)/(\d+)',
-                        r'ticket[:\s#]+(\d+)',
-                        r'request[:\s#]+(\d+)',
-                        r'\b(\d{6,})\b'  # Any 6+ digit number
-                    ]
-                    
-                    for pattern in patterns:
-                        matches = re.findall(pattern, body, re.IGNORECASE)
-                        for match in matches:
-                            potential_parent = int(match)
-                            if potential_parent != int(ticket_id):  # Not self
-                                print(f"✅ Found potential parent {potential_parent} in first comment")
-                                return potential_parent
-    
-    # Method 3: Check subject for ticket references
-    print("Method 3: Checking ticket subject...")
-    if ticket_data:
-        subject = ticket_data.get('ticket', {}).get('subject', '')
-        print(f"Subject: {subject}")
-        
-        # Look for ticket references in subject
-        numbers = re.findall(r'\b(\d{6,})\b', subject)
-        for num in numbers:
-            if int(num) != int(ticket_id):
-                print(f"✅ Found potential parent {num} in subject")
-                return int(num)
-    
-    # Method 4: Search for tickets that might be the parent
-    print("Method 4: Reverse search for parent...")
-    # Get the requester of this ticket
-    if ticket_data:
-        requester_id = ticket_data.get('ticket', {}).get('requester_id')
-        if requester_id:
-            # Search for other tickets from same requester
-            search_data = get_json(f"{BASE_URL}/search.json?query=type:ticket requester:{requester_id}")
-            if search_data:
-                results = search_data.get('results', [])
-                print(f"Found {len(results)} tickets from same requester")
-                for result in results:
-                    result_id = result['id']
-                    if result_id != int(ticket_id):
-                        # Check if this could be a parent (created before our ticket)
-                        result_created = result.get('created_at', '')
-                        our_created = ticket_data.get('ticket', {}).get('created_at', '')
-                        if result_created < our_created:
-                            print(f"✅ Found potential parent {result_id} (created earlier by same requester)")
-                            return result_id
-    
-    print("❌ No parent found")
+last_api_call_time = 0
+
+def wait_for_rate_limit():
+    global last_api_call_time
+    now = time.time()
+    elapsed = now - last_api_call_time
+    if elapsed < RATE_LIMIT_DELAY:
+        time.sleep(RATE_LIMIT_DELAY - elapsed)
+    last_api_call_time = time.time()
+
+def zendesk_get_with_retry(url):
+    wait_for_rate_limit()
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = requests.get(url, auth=AUTH)
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                logging.warning(f"Rate limited on attempt {attempt+1}. Waiting {retry_after}s...")
+                time.sleep(retry_after)
+                continue
+            logging.error(f"GET {url} failed: {resp.status_code} {resp.text}")
+            if attempt < MAX_RETRIES - 1:
+                wait_time = BACKOFF_MULTIPLIER ** attempt
+                logging.info(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            return None
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Request exception on attempt {attempt+1}: {e}")
+            if attempt < MAX_RETRIES - 1:
+                wait_time = BACKOFF_MULTIPLIER ** attempt
+                logging.info(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            return None
     return None
 
+def zendesk_put_with_retry(url, data):
+    wait_for_rate_limit()
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = requests.put(url, json=data, auth=AUTH)
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                logging.warning(f"Rate limited on PUT attempt {attempt+1}. Waiting {retry_after}s...")
+                time.sleep(retry_after)
+                continue
+            logging.error(f"PUT {url} failed: {resp.status_code} {resp.text}")
+            if attempt < MAX_RETRIES - 1:
+                wait_time = BACKOFF_MULTIPLIER ** attempt
+                logging.info(f"Retrying PUT in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            return False
+        except requests.exceptions.RequestException as e:
+            logging.error(f"PUT request exception on attempt {attempt+1}: {e}")
+            if attempt < MAX_RETRIES - 1:
+                wait_time = BACKOFF_MULTIPLIER ** attempt
+                logging.info(f"Retrying PUT in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            return False
+    return False
+
+def get_tickets_from_view(view_id):
+    url = f"{BASE_URL}/views/{view_id}/tickets.json"
+    tickets = []
+    while url:
+        data = zendesk_get_with_retry(url)
+        if not data:
+            break
+        tickets.extend(data.get("tickets", []))
+        url = data.get("next_page")
+    return tickets
+
+def get_ticket(ticket_id):
+    url = f"{BASE_URL}/tickets/{ticket_id}.json"
+    data = zendesk_get_with_retry(url)
+    return data.get("ticket") if data else None
+
+def get_user(user_id):
+    url = f"{BASE_URL}/users/{user_id}.json"
+    data = zendesk_get_with_retry(url)
+    return data.get("user") if data else None
+
+def find_parent_ticket_id(child_ticket):
+    """
+    Find parent ticket by searching for earlier tickets from the same requester.
+    This is the method that worked in the diagnostic.
+    """
+    child_id = child_ticket['id']
+    requester_id = child_ticket['requester_id']
+    child_created = child_ticket['created_at']
+    
+    # Search for tickets from the same requester
+    search_url = f"{BASE_URL}/search.json?query=type:ticket requester:{requester_id}"
+    search_data = zendesk_get_with_retry(search_url)
+    
+    if not search_data:
+        return None
+    
+    # Find the most recent ticket created before this one
+    potential_parents = []
+    for result in search_data.get('results', []):
+        result_id = result['id']
+        result_created = result.get('created_at', '')
+        
+        # Must be different ticket, created before this one
+        if result_id != child_id and result_created < child_created:
+            potential_parents.append((result_id, result_created))
+    
+    if not potential_parents:
+        return None
+    
+    # Sort by creation date (most recent first) and return the most recent parent
+    potential_parents.sort(key=lambda x: x[1], reverse=True)
+    parent_id = potential_parents[0][0]
+    
+    # Validate parent ID is reasonable (not too long/weird)
+    if parent_id > 999999999:  # Too long to be a real ticket ID
+        logging.warning(f"Rejecting invalid parent ID {parent_id} for child {child_id}")
+        return None
+    
+    return parent_id
+
+def get_ticket_field(ticket, field_id):
+    for field in ticket.get("custom_fields", []):
+        if field["id"] == field_id:
+            return field.get("value")
+    return None
+
+def set_ticket_field(ticket_id, field_id, value):
+    url = f"{BASE_URL}/tickets/{ticket_id}.json"
+    payload = {"ticket": {"custom_fields": [{"id": field_id, "value": value}]}}
+    return zendesk_put_with_retry(url, payload)
+
+def add_internal_note(ticket_id, body):
+    url = f"{BASE_URL}/tickets/{ticket_id}.json"
+    payload = {"ticket": {"comment": {"body": body, "public": False}}}
+    return zendesk_put_with_retry(url, payload)
+
 def main():
-    print("=== SIMPLE PARENT TICKET FINDER ===")
-    
-    # Get tickets from view
-    view_data = get_json(f"{BASE_URL}/views/{VIEW_ID}/tickets.json")
-    if not view_data:
-        print("Failed to get view data")
+    logging.info("Starting Zendesk side conversation processing...")
+
+    tickets = get_tickets_from_view(VIEW_ID)
+    logging.info(f"Found {len(tickets)} tickets in view {VIEW_ID}.")
+
+    if not tickets:
+        logging.info("No tickets to process.")
         return
-    
-    tickets = view_data.get('tickets', [])
-    print(f"Found {len(tickets)} tickets in view")
-    
-    # Analyze each ticket for parent relationships
+
+    # Build parent-child mapping using the working method
+    logging.info("Finding parent relationships...")
     parent_mapping = {}
     
     for ticket in tickets:
-        ticket_id = ticket['id']
-        parent_id = find_parent_ticket_id(ticket_id)
+        child_id = ticket['id']
+        parent_id = find_parent_ticket_id(ticket)
         if parent_id:
-            parent_mapping[str(ticket_id)] = parent_id
-    
-    print(f"\n=== RESULTS ===")
-    print(f"Found {len(parent_mapping)} parent relationships:")
-    for child_id, parent_id in parent_mapping.items():
-        print(f"  Child {child_id} → Parent {parent_id}")
-    
-    # Now test copying the custom field for found relationships
-    print(f"\n=== TESTING CUSTOM FIELD COPY ===")
-    
-    for child_id, parent_id in parent_mapping.items():
-        print(f"\nTesting {child_id} → {parent_id}:")
-        
-        # Get parent ticket
-        parent_data = get_json(f"{BASE_URL}/tickets/{parent_id}.json")
-        if not parent_data:
-            print(f"  ❌ Could not fetch parent ticket {parent_id}")
-            continue
-        
-        # Check for Ops Escalation Reason field
-        parent_ticket = parent_data['ticket']
-        ops_reason = None
-        for field in parent_ticket.get('custom_fields', []):
-            if field['id'] == OPS_ESCALATION_REASON_ID:
-                ops_reason = field.get('value')
-                break
-        
-        if ops_reason:
-            print(f"  ✅ Parent has Ops Escalation Reason: {ops_reason}")
-            print(f"  → Would copy to child {child_id}")
+            parent_mapping[str(child_id)] = parent_id
+            logging.info(f"Found parent relationship: {child_id} → {parent_id}")
         else:
-            print(f"  ⚠ Parent {parent_id} has no Ops Escalation Reason value")
+            logging.warning(f"No parent found for ticket {child_id}")
     
+    logging.info(f"Found {len(parent_mapping)} parent relationships out of {len(tickets)} tickets")
+
     if not parent_mapping:
-        print("\n❌ NO PARENT RELATIONSHIPS FOUND!")
-        print("This suggests the side conversation tickets are not properly linked.")
-        print("Please manually check one ticket in Zendesk UI to see how it references the parent.")
+        logging.error("No parent relationships found!")
+        return
+
+    # Process each child ticket
+    user_cache = {}
+    parent_ticket_cache = {}
+    
+    success_count = 0
+    no_parent_count = 0
+    missing_field_count = 0
+    error_count = 0
+
+    for i, child_ticket in enumerate(tickets, 1):
+        child_id = str(child_ticket["id"])
+        child_requester_id = child_ticket["requester_id"]
+
+        logging.info(f"Processing ticket {i}/{len(tickets)}: {child_id}")
+
+        try:
+            parent_id = parent_mapping.get(child_id)
+            if not parent_id:
+                logging.warning(f"⚠ Ticket {child_id} — no parent found.")
+                no_parent_count += 1
+                continue
+
+            # Get parent ticket (with caching)
+            if parent_id not in parent_ticket_cache:
+                parent_ticket = get_ticket(parent_id)
+                if not parent_ticket:
+                    logging.warning(f"⚠ Failed to fetch parent {parent_id} for child {child_id}.")
+                    error_count += 1
+                    continue
+                parent_ticket_cache[parent_id] = parent_ticket
+            else:
+                parent_ticket = parent_ticket_cache[parent_id]
+
+            # Check if parent has Ops Escalation Reason
+            parent_value = get_ticket_field(parent_ticket, OPS_ESCALATION_REASON_ID)
+
+            if parent_value:
+                # Copy the field value to child
+                if set_ticket_field(child_id, OPS_ESCALATION_REASON_ID, parent_value):
+                    logging.info(f"✅ Copied Ops Escalation Reason '{parent_value}' from parent {parent_id} → child {child_id}")
+                    success_count += 1
+                else:
+                    logging.error(f"❌ Failed to update child ticket {child_id}")
+                    error_count += 1
+            else:
+                # Parent doesn't have the field - add internal note
+                logging.info(f"Parent {parent_id} has no Ops Escalation Reason - adding note")
+                
+                # Get user info for the note (with caching)
+                assignee_id = parent_ticket.get("assignee_id")
+                if assignee_id:
+                    if assignee_id in user_cache:
+                        assignee_name = user_cache[assignee_id]
+                    else:
+                        assignee = get_user(assignee_id)
+                        assignee_name = assignee["name"] if assignee else f"ID:{assignee_id}"
+                        user_cache[assignee_id] = assignee_name
+                    assignee_link = f"https://{SUBDOMAIN}.zendesk.com/users/{assignee_id}"
+                else:
+                    assignee_name = "Unassigned"
+                    assignee_link = ""
+
+                if child_requester_id in user_cache:
+                    requester_name = user_cache[child_requester_id]
+                else:
+                    requester = get_user(child_requester_id)
+                    requester_name = requester["name"] if requester else f"ID:{child_requester_id}"
+                    user_cache[child_requester_id] = requester_name
+                requester_link = f"https://{SUBDOMAIN}.zendesk.com/users/{child_requester_id}"
+
+                note_body = (
+                    f"⚠ Ops Escalation Reason missing in parent ticket {parent_id}. "
+                    f"Assignee in parent: [{assignee_name}]({assignee_link}), "
+                    f"Child requester: [{requester_name}]({requester_link})"
+                )
+
+                if add_internal_note(parent_id, note_body):
+                    logging.info(f"✅ Added internal note to parent {parent_id}")
+                    missing_field_count += 1
+                else:
+                    logging.error(f"❌ Failed to add internal note to parent {parent_id}")
+                    error_count += 1
+
+        except Exception as e:
+            logging.error(f"❌ Unexpected error processing ticket {child_id}: {e}")
+            error_count += 1
+
+    # Final summary
+    logging.info(f"\n=== FINAL SUMMARY ===")
+    logging.info(f"Total tickets processed: {len(tickets)}")
+    logging.info(f"Parent relationships found: {len(parent_mapping)}")
+    logging.info(f"Successfully copied Ops Escalation Reason: {success_count}")
+    logging.info(f"Added notes for missing parent field: {missing_field_count}")
+    logging.info(f"No parent found: {no_parent_count}")
+    logging.info(f"Errors: {error_count}")
+    
+    total_processed = success_count + missing_field_count + no_parent_count
+    completion = (total_processed / len(tickets) * 100) if tickets else 100.0
+    logging.info(f"Completion rate: {completion:.1f}%")
 
 if __name__ == "__main__":
     main()
