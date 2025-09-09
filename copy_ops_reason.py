@@ -19,6 +19,10 @@ AUTH = (f"{EMAIL}/token", API_TOKEN)
 OPS_ESCALATION_REASON_ID = 20837946693533
 VIEW_ID = 27529425733661  # Ops Escalation Reason Empty
 
+# Search configuration
+MAX_SEARCH_PAGES = 20  # Limit search to prevent timeouts
+SEARCH_DATE_LIMIT_DAYS = 90  # Only search tickets from last 90 days
+
 # ------------------------
 # API Helpers
 # ------------------------
@@ -92,40 +96,108 @@ def add_internal_note(ticket_id, body):
     return zendesk_put(url, payload)
 
 # ------------------------
-# Reverse Lookup using external_ids.targetTicketId
+# Improved Reverse Lookup with Pagination and Limits
 # ------------------------
 def find_parent_for_child(child_id, parent_cache=None):
     """
     Search for a parent ticket whose side conversation external_ids.targetTicketId matches child_id.
-    Uses parent_cache if provided. Searches all tickets (no date cutoff) and paginates.
+    Uses improved search with date limits and pagination controls.
     """
     if parent_cache and child_id in parent_cache:
         return parent_cache[child_id]
 
-    search_url = f"{BASE_URL}/search.json?query=type:ticket"
-    while search_url:
-        data = zendesk_get(search_url)
-        if not data:
+    # Calculate date limit for search
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=SEARCH_DATE_LIMIT_DAYS)).strftime("%Y-%m-%d")
+    
+    # Use date-limited search query with smaller page size
+    search_query = f"type:ticket created>={cutoff_date}"
+    search_url = f"{BASE_URL}/search.json?query={requests.utils.quote(search_query)}&per_page=100"
+    
+    page_count = 0
+    
+    while search_url and page_count < MAX_SEARCH_PAGES:
+        try:
+            data = zendesk_get(search_url)
+            if not data:
+                break
+
+            page_count += 1
+            logging.debug(f"Searching page {page_count} for parent of child {child_id}")
+
+            for t in data.get("results", []):
+                side_convos = get_side_conversations(t["id"])
+                for sc in side_convos:
+                    external_ids = sc.get("external_ids", {})
+                    target_id = external_ids.get("targetTicketId")
+                    if str(target_id) == str(child_id):
+                        if parent_cache is not None:
+                            parent_cache[child_id] = t["id"]
+                        logging.debug(f"Found parent {t['id']} for child {child_id}")
+                        return t["id"]
+
+            search_url = data.get("next_page")
+            
+        except Exception as e:
+            logging.error(f"Error during search for child {child_id}: {e}")
             break
 
-        for t in data.get("results", []):
-            side_convos = get_side_conversations(t["id"])
-            for sc in side_convos:
-                external_ids = sc.get("external_ids", {})
-                target_id = external_ids.get("targetTicketId")
-                if str(target_id) == str(child_id):
-                    if parent_cache is not None:
-                        parent_cache[child_id] = t["id"]
-                    logging.debug(f"Found parent {t['id']} for child {child_id}")
-                    return t["id"]
+    if page_count >= MAX_SEARCH_PAGES:
+        logging.warning(f"⚠ Search for child ticket {child_id} stopped after {MAX_SEARCH_PAGES} pages")
+    else:
+        logging.warning(f"⚠ No parent found for child ticket {child_id} (searched {page_count} pages)")
+    
+    return None
 
-        search_url = data.get("next_page")
+# Alternative approach using incremental export (more efficient for large datasets)
+def find_parent_for_child_incremental(child_id, parent_cache=None):
+    """
+    Alternative approach using incremental ticket export API for better performance.
+    This is more efficient for large Zendesk instances.
+    """
+    if parent_cache and child_id in parent_cache:
+        return parent_cache[child_id]
 
-    logging.warning(f"⚠ No parent found for child ticket {child_id} (after full search)")
+    # Start incremental export from recent tickets
+    start_time = int((datetime.now(timezone.utc) - timedelta(days=SEARCH_DATE_LIMIT_DAYS)).timestamp())
+    export_url = f"{BASE_URL}/incremental/tickets.json?start_time={start_time}"
+    
+    tickets_checked = 0
+    max_tickets_to_check = 5000  # Reasonable limit
+    
+    while export_url and tickets_checked < max_tickets_to_check:
+        try:
+            data = zendesk_get(export_url)
+            if not data:
+                break
+
+            for t in data.get("tickets", []):
+                tickets_checked += 1
+                
+                # Check if this ticket has side conversations
+                side_convos = get_side_conversations(t["id"])
+                for sc in side_convos:
+                    external_ids = sc.get("external_ids", {})
+                    target_id = external_ids.get("targetTicketId")
+                    if str(target_id) == str(child_id):
+                        if parent_cache is not None:
+                            parent_cache[child_id] = t["id"]
+                        logging.debug(f"Found parent {t['id']} for child {child_id} via incremental export")
+                        return t["id"]
+
+            export_url = data.get("next_page")
+            
+            if tickets_checked % 1000 == 0:
+                logging.debug(f"Checked {tickets_checked} tickets via incremental export")
+                
+        except Exception as e:
+            logging.error(f"Error during incremental export search for child {child_id}: {e}")
+            break
+
+    logging.warning(f"⚠ No parent found for child ticket {child_id} via incremental export (checked {tickets_checked} tickets)")
     return None
 
 # ------------------------
-# Main Logic
+# Main Logic with Error Handling
 # ------------------------
 def main():
     tickets = get_tickets_from_view(VIEW_ID)
@@ -135,62 +207,94 @@ def main():
     parent_cache = {}
     user_cache = {}
 
-    for child_ticket in tickets:
+    # Track statistics
+    success_count = 0
+    no_parent_count = 0
+    error_count = 0
+
+    for i, child_ticket in enumerate(tickets, 1):
         child_id = child_ticket["id"]
         child_requester_id = child_ticket["requester_id"]
+        
+        logging.info(f"Processing ticket {i}/{len(tickets)}: {child_id}")
 
-        # Find parent ticket
-        parent_id = find_parent_for_child(child_id, parent_cache)
-        if not parent_id:
-            logging.warning(f"⚠ Ticket {child_id} — no parent found via external_ids.targetTicketId.")
-            continue
-
-        if parent_id not in parent_cache or isinstance(parent_cache[parent_id], int):
-            parent_ticket = get_ticket(parent_id)
-            if not parent_ticket:
-                logging.warning(f"⚠ Failed to fetch parent {parent_id} for child {child_id}.")
+        try:
+            # Find parent ticket - try standard search first, fall back to incremental if needed
+            parent_id = find_parent_for_child(child_id, parent_cache)
+            
+            # If standard search fails, try incremental approach
+            if not parent_id:
+                logging.info(f"Trying incremental export for child {child_id}")
+                parent_id = find_parent_for_child_incremental(child_id, parent_cache)
+            
+            if not parent_id:
+                logging.warning(f"⚠ Ticket {child_id} — no parent found via any method.")
+                no_parent_count += 1
                 continue
-            parent_cache[parent_id] = parent_ticket
-        else:
-            parent_ticket = parent_cache[parent_id]
 
-        parent_value = get_ticket_field(parent_ticket, OPS_ESCALATION_REASON_ID)
-
-        if parent_value:
-            if set_ticket_field(child_id, OPS_ESCALATION_REASON_ID, parent_value):
-                logging.info(f"✅ Copied Ops Escalation Reason from parent {parent_id} → child {child_id}")
+            # Get parent ticket details
+            if parent_id not in parent_cache or isinstance(parent_cache[parent_id], int):
+                parent_ticket = get_ticket(parent_id)
+                if not parent_ticket:
+                    logging.warning(f"⚠ Failed to fetch parent {parent_id} for child {child_id}.")
+                    error_count += 1
+                    continue
+                parent_cache[parent_id] = parent_ticket
             else:
-                logging.error(f"❌ Failed to update child ticket {child_id}")
-        else:
-            # Fetch assignee name and hyperlink
-            assignee_id = parent_ticket.get("assignee_id")
-            if assignee_id in user_cache:
-                assignee_name = user_cache[assignee_id]
-            else:
-                assignee = get_user(assignee_id)
-                assignee_name = assignee["name"] if assignee else f"ID:{assignee_id}"
-                user_cache[assignee_id] = assignee_name
-            assignee_link = f"https://{SUBDOMAIN}.zendesk.com/users/{assignee_id}"
+                parent_ticket = parent_cache[parent_id]
 
-            # Fetch child requester name and hyperlink
-            if child_requester_id in user_cache:
-                requester_name = user_cache[child_requester_id]
-            else:
-                requester = get_user(child_requester_id)
-                requester_name = requester["name"] if requester else f"ID:{child_requester_id}"
-                user_cache[child_requester_id] = requester_name
-            requester_link = f"https://{SUBDOMAIN}.zendesk.com/users/{child_requester_id}"
+            parent_value = get_ticket_field(parent_ticket, OPS_ESCALATION_REASON_ID)
 
-            note_body = (
-                f"⚠ Ops Escalation Reason missing in parent ticket {parent_id}. "
-                f"Assignee in parent: [{assignee_name}]({assignee_link}), "
-                f"Child requester: [{requester_name}]({requester_link})"
-            )
-
-            # Add note to PARENT ticket
-            if add_internal_note(parent_id, note_body):
-                logging.info(f"✅ Added internal note to parent {parent_id} mentioning missing Ops Escalation Reason")
+            if parent_value:
+                if set_ticket_field(child_id, OPS_ESCALATION_REASON_ID, parent_value):
+                    logging.info(f"✅ Copied Ops Escalation Reason from parent {parent_id} → child {child_id}")
+                    success_count += 1
+                else:
+                    logging.error(f"❌ Failed to update child ticket {child_id}")
+                    error_count += 1
             else:
-                logging.error(f"❌ Failed to add internal note to parent ticket {parent_id}")
+                # Fetch assignee name and hyperlink
+                assignee_id = parent_ticket.get("assignee_id")
+                if assignee_id in user_cache:
+                    assignee_name = user_cache[assignee_id]
+                else:
+                    assignee = get_user(assignee_id)
+                    assignee_name = assignee["name"] if assignee else f"ID:{assignee_id}"
+                    user_cache[assignee_id] = assignee_name
+                assignee_link = f"https://{SUBDOMAIN}.zendesk.com/users/{assignee_id}"
+
+                # Fetch child requester name and hyperlink
+                if child_requester_id in user_cache:
+                    requester_name = user_cache[child_requester_id]
+                else:
+                    requester = get_user(child_requester_id)
+                    requester_name = requester["name"] if requester else f"ID:{child_requester_id}"
+                    user_cache[child_requester_id] = requester_name
+                requester_link = f"https://{SUBDOMAIN}.zendesk.com/users/{child_requester_id}"
+
+                note_body = (
+                    f"⚠ Ops Escalation Reason missing in parent ticket {parent_id}. "
+                    f"Assignee in parent: [{assignee_name}]({assignee_link}), "
+                    f"Child requester: [{requester_name}]({requester_link})"
+                )
+
+                # Add note to PARENT ticket
+                if add_internal_note(parent_id, note_body):
+                    logging.info(f"✅ Added internal note to parent {parent_id} mentioning missing Ops Escalation Reason")
+                else:
+                    logging.error(f"❌ Failed to add internal note to parent ticket {parent_id}")
+                    error_count += 1
+                    
+        except Exception as e:
+            logging.error(f"❌ Unexpected error processing ticket {child_id}: {e}")
+            error_count += 1
+
+    # Print summary
+    logging.info(f"\n=== SUMMARY ===")
+    logging.info(f"Total tickets processed: {len(tickets)}")
+    logging.info(f"Successful updates: {success_count}")
+    logging.info(f"No parent found: {no_parent_count}")
+    logging.info(f"Errors: {error_count}")
+
 if __name__ == "__main__":
     main()
