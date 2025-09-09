@@ -1,9 +1,8 @@
 import os
 import logging
 import requests
-import time
 import json
-from pprint import pprint
+import re
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,217 +17,158 @@ API_TOKEN = os.environ["API_TOKEN"]
 BASE_URL = f"https://{SUBDOMAIN}.zendesk.com/api/v2"
 AUTH = (f"{EMAIL}/token", API_TOKEN)
 
-VIEW_ID = 27529425733661  # Ops Escalation Reason Empty
+VIEW_ID = 27529425733661
+OPS_ESCALATION_REASON_ID = 20837946693533
 
-# Rate limiting
-RATE_LIMIT_DELAY = 0.2
-last_api_call_time = 0
-
-def wait_for_rate_limit():
-    global last_api_call_time
-    now = time.time()
-    elapsed = now - last_api_call_time
-    if elapsed < RATE_LIMIT_DELAY:
-        time.sleep(RATE_LIMIT_DELAY - elapsed)
-    last_api_call_time = time.time()
-
-def zendesk_get_with_retry(url):
-    wait_for_rate_limit()
+def get_json(url):
+    """Simple API call"""
     try:
         resp = requests.get(url, auth=AUTH)
-        if resp.status_code == 200:
-            return resp.json()
-        logging.error(f"GET {url} failed: {resp.status_code} {resp.text}")
-        return None
-    except Exception as e:
-        logging.error(f"Request exception: {e}")
+        return resp.json() if resp.status_code == 200 else None
+    except:
         return None
 
-def deep_analyze_ticket(ticket_id):
-    """Comprehensive analysis of a single ticket"""
-    logging.info(f"\n{'='*60}")
-    logging.info(f"DEEP ANALYSIS OF TICKET {ticket_id}")
-    logging.info(f"{'='*60}")
+def find_parent_ticket_id(ticket_id):
+    """Try multiple methods to find parent ticket ID"""
     
-    # 1. Basic ticket info
-    logging.info("1. BASIC TICKET DATA:")
-    url = f"{BASE_URL}/tickets/{ticket_id}.json"
-    basic_data = zendesk_get_with_retry(url)
-    if basic_data:
-        ticket = basic_data['ticket']
-        logging.info(f"   ID: {ticket['id']}")
-        logging.info(f"   Subject: {ticket['subject']}")
-        logging.info(f"   Status: {ticket['status']}")
-        logging.info(f"   Created: {ticket['created_at']}")
-        logging.info(f"   Requester ID: {ticket['requester_id']}")
-        logging.info(f"   Assignee ID: {ticket.get('assignee_id', 'None')}")
+    print(f"\n=== FINDING PARENT FOR TICKET {ticket_id} ===")
+    
+    # Method 1: Check ticket via field
+    print("Method 1: Checking ticket.via...")
+    ticket_data = get_json(f"{BASE_URL}/tickets/{ticket_id}.json")
+    if ticket_data:
+        via = ticket_data.get('ticket', {}).get('via', {})
+        print(f"Via structure: {json.dumps(via, indent=2)}")
         
-        # Show via structure
-        logging.info("\n   VIA STRUCTURE:")
-        via = ticket.get('via', {})
-        logging.info(f"   {json.dumps(via, indent=6)}")
+        # Extract from via.source.from.id if available
+        from_obj = via.get('source', {}).get('from', {})
+        if from_obj.get('type') == 'ticket' and from_obj.get('id'):
+            parent_id = from_obj['id']
+            print(f"✅ Found parent {parent_id} in via.source.from.id")
+            return parent_id
     
-    # 2. Try all possible API endpoints for this ticket
-    endpoints_to_try = [
-        ("Basic", f"{BASE_URL}/tickets/{ticket_id}.json"),
-        ("With audits", f"{BASE_URL}/tickets/{ticket_id}.json?include=audits"),
-        ("With users", f"{BASE_URL}/tickets/{ticket_id}.json?include=users"),
-        ("With via_source", f"{BASE_URL}/tickets/{ticket_id}.json?include=via_source"),
-        ("With side_conversations", f"{BASE_URL}/tickets/{ticket_id}.json?include=side_conversations"),
-        ("All includes", f"{BASE_URL}/tickets/{ticket_id}.json?include=audits,users,via_source,side_conversations"),
-        ("Audits endpoint", f"{BASE_URL}/tickets/{ticket_id}/audits.json"),
-        ("Audits with includes", f"{BASE_URL}/tickets/{ticket_id}/audits.json?include=users,via_source"),
-        ("Comments endpoint", f"{BASE_URL}/tickets/{ticket_id}/comments.json"),
-        ("Side conversations", f"{BASE_URL}/tickets/{ticket_id}/side_conversations.json"),
-    ]
+    # Method 2: Check ticket audits for first comment
+    print("Method 2: Checking first audit comment...")
+    audits_data = get_json(f"{BASE_URL}/tickets/{ticket_id}/audits.json")
+    if audits_data:
+        audits = audits_data.get('audits', [])
+        if audits:
+            # Check first audit (creation)
+            first_audit = audits[0]
+            for event in first_audit.get('events', []):
+                if event.get('type') == 'Comment':
+                    body = event.get('body', '') + ' ' + event.get('html_body', '')
+                    print(f"First comment preview: {body[:200]}")
+                    
+                    # Look for ticket ID patterns
+                    patterns = [
+                        rf'https://{SUBDOMAIN}\.zendesk\.com/(?:agent/tickets|hc/en-us/requests)/(\d+)',
+                        r'ticket[:\s#]+(\d+)',
+                        r'request[:\s#]+(\d+)',
+                        r'\b(\d{6,})\b'  # Any 6+ digit number
+                    ]
+                    
+                    for pattern in patterns:
+                        matches = re.findall(pattern, body, re.IGNORECASE)
+                        for match in matches:
+                            potential_parent = int(match)
+                            if potential_parent != int(ticket_id):  # Not self
+                                print(f"✅ Found potential parent {potential_parent} in first comment")
+                                return potential_parent
     
-    logging.info(f"\n2. TRYING ALL API ENDPOINTS:")
-    for name, url in endpoints_to_try:
-        logging.info(f"\n   {name}: {url}")
-        data = zendesk_get_with_retry(url)
-        if data:
-            # Check for any parent/relationship clues in the response
-            data_str = json.dumps(data)
-            potential_tickets = set()
-            
-            # Look for any ticket IDs in the response
-            import re
-            ticket_matches = re.findall(r'"id":\s*(\d{6,})', data_str)
-            for match in ticket_matches:
-                if int(match) != int(ticket_id):
-                    potential_tickets.add(match)
-            
-            # Look for URLs
-            url_matches = re.findall(rf'https://{SUBDOMAIN}\.zendesk\.com/[^"]*?(\d{{6,}})', data_str)
-            potential_tickets.update(url_matches)
-            
-            if potential_tickets:
-                logging.info(f"      → Found potential related ticket IDs: {', '.join(potential_tickets)}")
-            else:
-                logging.info(f"      → No related ticket IDs found")
-                
-            # Show key structure elements
-            if 'ticket' in data:
-                ticket_data = data['ticket']
-                if 'via' in ticket_data:
-                    logging.info(f"      → Via: {json.dumps(ticket_data['via'], indent=8)}")
-            
-            if 'audits' in data:
-                audits = data['audits']
-                logging.info(f"      → Found {len(audits)} audits")
-                for i, audit in enumerate(audits[:3]):  # Show first 3 audits
-                    logging.info(f"         Audit {i+1}: ID {audit.get('id')}, Events: {len(audit.get('events', []))}")
-                    for j, event in enumerate(audit.get('events', [])[:2]):  # First 2 events
-                        event_type = event.get('type', 'Unknown')
-                        logging.info(f"            Event {j+1}: {event_type}")
-                        if event_type == 'Comment':
-                            body = event.get('body', '')[:200]
-                            html_body = event.get('html_body', '')[:200]
-                            logging.info(f"               Body preview: {body}")
-                            if html_body != body:
-                                logging.info(f"               HTML preview: {html_body}")
-            
-            if 'side_conversations' in data:
-                side_convs = data['side_conversations']
-                logging.info(f"      → Found {len(side_convs)} side conversations")
-                for i, conv in enumerate(side_convs):
-                    logging.info(f"         Side conv {i+1}: {json.dumps(conv, indent=10)}")
-        else:
-            logging.info(f"      → Failed to retrieve data")
-    
-    # 3. Try to find any relationships via search
-    logging.info(f"\n3. SEARCHING FOR RELATIONSHIPS:")
-    
-    # Search for tickets that might reference this one
-    search_url = f"{BASE_URL}/search.json?query=type:ticket {ticket_id}"
-    search_data = zendesk_get_with_retry(search_url)
-    if search_data and search_data.get('results'):
-        logging.info(f"   Found {len(search_data['results'])} tickets that reference {ticket_id}")
-        for result in search_data['results'][:5]:  # Show first 5
-            logging.info(f"      → Ticket {result['id']}: {result.get('subject', 'No subject')}")
-    else:
-        logging.info(f"   No tickets found that reference {ticket_id}")
-    
-    # Also search in the subject/description
-    if basic_data:
-        subject = basic_data['ticket'].get('subject', '')
-        description = basic_data['ticket'].get('description', '')
+    # Method 3: Check subject for ticket references
+    print("Method 3: Checking ticket subject...")
+    if ticket_data:
+        subject = ticket_data.get('ticket', {}).get('subject', '')
+        print(f"Subject: {subject}")
         
-        # Look for ticket references in subject and description
-        logging.info(f"\n4. ANALYZING TICKET CONTENT FOR REFERENCES:")
-        logging.info(f"   Subject: {subject}")
-        logging.info(f"   Description preview: {description[:300]}")
-        
-        # Extract any numbers that could be ticket IDs
-        import re
-        potential_ids = re.findall(r'\b(\d{6,})\b', f"{subject} {description}")
-        potential_ids = [pid for pid in potential_ids if int(pid) != int(ticket_id)]
-        if potential_ids:
-            logging.info(f"   Potential parent ticket IDs from content: {potential_ids}")
-        else:
-            logging.info(f"   No potential ticket IDs found in content")
+        # Look for ticket references in subject
+        numbers = re.findall(r'\b(\d{6,})\b', subject)
+        for num in numbers:
+            if int(num) != int(ticket_id):
+                print(f"✅ Found potential parent {num} in subject")
+                return int(num)
+    
+    # Method 4: Search for tickets that might be the parent
+    print("Method 4: Reverse search for parent...")
+    # Get the requester of this ticket
+    if ticket_data:
+        requester_id = ticket_data.get('ticket', {}).get('requester_id')
+        if requester_id:
+            # Search for other tickets from same requester
+            search_data = get_json(f"{BASE_URL}/search.json?query=type:ticket requester:{requester_id}")
+            if search_data:
+                results = search_data.get('results', [])
+                print(f"Found {len(results)} tickets from same requester")
+                for result in results:
+                    result_id = result['id']
+                    if result_id != int(ticket_id):
+                        # Check if this could be a parent (created before our ticket)
+                        result_created = result.get('created_at', '')
+                        our_created = ticket_data.get('ticket', {}).get('created_at', '')
+                        if result_created < our_created:
+                            print(f"✅ Found potential parent {result_id} (created earlier by same requester)")
+                            return result_id
+    
+    print("❌ No parent found")
+    return None
 
 def main():
-    logging.info("Starting comprehensive Zendesk diagnostic...")
+    print("=== SIMPLE PARENT TICKET FINDER ===")
     
     # Get tickets from view
-    url = f"{BASE_URL}/views/{VIEW_ID}/tickets.json"
-    data = zendesk_get_with_retry(url)
-    if not data:
-        logging.error("Failed to get tickets from view")
+    view_data = get_json(f"{BASE_URL}/views/{VIEW_ID}/tickets.json")
+    if not view_data:
+        print("Failed to get view data")
         return
     
-    tickets = data.get('tickets', [])
-    logging.info(f"Found {len(tickets)} tickets in view")
+    tickets = view_data.get('tickets', [])
+    print(f"Found {len(tickets)} tickets in view")
     
-    if not tickets:
-        logging.info("No tickets to analyze")
-        return
+    # Analyze each ticket for parent relationships
+    parent_mapping = {}
     
-    # Analyze the first few tickets in detail
-    tickets_to_analyze = min(3, len(tickets))
-    logging.info(f"Will deep-analyze first {tickets_to_analyze} tickets")
-    
-    for i, ticket in enumerate(tickets[:tickets_to_analyze]):
-        deep_analyze_ticket(ticket['id'])
-        
-        if i < tickets_to_analyze - 1:
-            logging.info(f"\nWaiting before next analysis...")
-            time.sleep(2)  # Pause between analyses
-    
-    # Summary analysis
-    logging.info(f"\n{'='*60}")
-    logging.info("SUMMARY ANALYSIS")
-    logging.info(f"{'='*60}")
-    
-    all_subjects = [t.get('subject', '') for t in tickets]
-    all_ids = [str(t['id']) for t in tickets]
-    
-    logging.info("All ticket IDs in view:")
-    logging.info(f"   {', '.join(all_ids)}")
-    
-    logging.info("\nAll subjects:")
     for ticket in tickets:
-        logging.info(f"   {ticket['id']}: {ticket.get('subject', 'No subject')}")
+        ticket_id = ticket['id']
+        parent_id = find_parent_ticket_id(ticket_id)
+        if parent_id:
+            parent_mapping[str(ticket_id)] = parent_id
     
-    # Look for patterns in subjects that might indicate relationships
-    logging.info("\nLooking for relationship patterns in subjects...")
-    import re
-    for ticket in tickets:
-        subject = ticket.get('subject', '')
-        ticket_id = str(ticket['id'])
+    print(f"\n=== RESULTS ===")
+    print(f"Found {len(parent_mapping)} parent relationships:")
+    for child_id, parent_id in parent_mapping.items():
+        print(f"  Child {child_id} → Parent {parent_id}")
+    
+    # Now test copying the custom field for found relationships
+    print(f"\n=== TESTING CUSTOM FIELD COPY ===")
+    
+    for child_id, parent_id in parent_mapping.items():
+        print(f"\nTesting {child_id} → {parent_id}:")
         
-        # Look for references to other tickets in this view
-        for other_ticket in tickets:
-            other_id = str(other_ticket['id'])
-            if other_id != ticket_id and other_id in subject:
-                logging.info(f"   POTENTIAL RELATIONSHIP: {ticket_id} references {other_id} in subject")
+        # Get parent ticket
+        parent_data = get_json(f"{BASE_URL}/tickets/{parent_id}.json")
+        if not parent_data:
+            print(f"  ❌ Could not fetch parent ticket {parent_id}")
+            continue
         
-        # Look for any ticket-like numbers
-        numbers = re.findall(r'\b(\d{6,})\b', subject)
-        numbers = [n for n in numbers if n != ticket_id]
-        if numbers:
-            logging.info(f"   Ticket {ticket_id} subject contains numbers: {numbers}")
+        # Check for Ops Escalation Reason field
+        parent_ticket = parent_data['ticket']
+        ops_reason = None
+        for field in parent_ticket.get('custom_fields', []):
+            if field['id'] == OPS_ESCALATION_REASON_ID:
+                ops_reason = field.get('value')
+                break
+        
+        if ops_reason:
+            print(f"  ✅ Parent has Ops Escalation Reason: {ops_reason}")
+            print(f"  → Would copy to child {child_id}")
+        else:
+            print(f"  ⚠ Parent {parent_id} has no Ops Escalation Reason value")
+    
+    if not parent_mapping:
+        print("\n❌ NO PARENT RELATIONSHIPS FOUND!")
+        print("This suggests the side conversation tickets are not properly linked.")
+        print("Please manually check one ticket in Zendesk UI to see how it references the parent.")
 
 if __name__ == "__main__":
     main()
