@@ -26,6 +26,11 @@ BACKOFF_MULTIPLIER = 2
 
 last_api_call_time = 0
 
+INCLUDE_VIA = "include=via_source"  # <-- force Zendesk to return via.source.{from,rel}
+
+DEBUG_DUMP_LIMIT = 5  # how many unmatched 'via' payloads to print for inspection
+debug_dumped = 0
+
 def wait_for_rate_limit():
     global last_api_call_time
     now = time.time()
@@ -104,12 +109,14 @@ def get_tickets_from_view(view_id):
     return tickets
 
 def get_ticket(ticket_id):
-    url = f"{BASE_URL}/tickets/{ticket_id}.json"
+    # IMPORTANT: include=via_source to expand via.source.from / via.source.rel
+    url = f"{BASE_URL}/tickets/{ticket_id}.json?{INCLUDE_VIA}"
     data = zendesk_get_with_retry(url)
     return data.get("ticket") if data else None
 
 def get_ticket_audits(ticket_id):
-    url = f"{BASE_URL}/tickets/{ticket_id}/audits.json"
+    # include=via_source also works on audits
+    url = f"{BASE_URL}/tickets/{ticket_id}/audits.json?{INCLUDE_VIA}"
     data = zendesk_get_with_retry(url)
     return data.get("audits", []) if data else []
 
@@ -138,34 +145,56 @@ def add_internal_note(ticket_id, body):
 def parent_from_ticket_via(ticket_obj):
     """
     Prefer the direct 'via' path when present on /tickets/{id}.json.
+    We accept:
+      - via.channel in {"side_conversation", "side_conversation_ticket"}
+      - OR via.source.rel == "side_conversation" (some tenants return 'api' channel)
     """
     via = ticket_obj.get("via") or {}
-    if via.get("channel") != "side_conversation":
-        return None
+    channel = (via.get("channel") or "").lower()
     src = (via.get("source") or {})
+    rel = (src.get("rel") or "").lower()
     from_obj = (src.get("from") or {})
-    if from_obj.get("type") == "ticket" and from_obj.get("id"):
-        return int(from_obj["id"])
+    from_type = (from_obj.get("type") or "").lower()
+    parent_id = from_obj.get("id")
+
+    is_sc_channel = channel in ("side_conversation", "side_conversation_ticket")
+    is_sc_rel = rel == "side_conversation"
+
+    if (is_sc_channel or is_sc_rel) and from_type == "ticket" and parent_id:
+        try:
+            return int(parent_id)
+        except (TypeError, ValueError):
+            return None
     return None
 
 def parent_from_audits(ticket_id):
     """
-    Fallback: scan audits; find the creation audit with via.channel == side_conversation,
-    then read source.from.id.
+    Fallback: scan audits; find a side-conversation creation audit,
+    then read source.from.id. (Audits sometimes mark channel 'api' with rel 'side_conversation'.)
     """
     audits = get_ticket_audits(ticket_id)
     for audit in audits:
         via = audit.get("via") or {}
-        if via.get("channel") != "side_conversation":
-            continue
+        channel = (via.get("channel") or "").lower()
         src = (via.get("source") or {})
+        rel = (src.get("rel") or "").lower()
         from_obj = (src.get("from") or {})
-        if from_obj.get("type") == "ticket" and from_obj.get("id"):
-            return int(from_obj["id"])
+        from_type = (from_obj.get("type") or "").lower()
+        parent_id = from_obj.get("id")
+
+        is_sc_channel = channel in ("side_conversation", "side_conversation_ticket")
+        is_sc_rel = rel == "side_conversation"
+
+        if (is_sc_channel or is_sc_rel) and from_type == "ticket" and parent_id:
+            try:
+                return int(parent_id)
+            except (TypeError, ValueError):
+                continue
     return None
 
 # ---------- Mapping using robust per-ticket fetch ----------
 def build_parent_child_mapping(child_tickets):
+    global debug_dumped
     mapping = {}
     child_ids = [int(t["id"]) for t in child_tickets]
     logging.info(f"Looking for parents of {len(child_ids)} child tickets")
@@ -185,6 +214,11 @@ def build_parent_child_mapping(child_tickets):
 
         if parent_id:
             mapping[str(cid)] = parent_id
+        else:
+            # dump the via we actually got for debugging (first few only)
+            if t and debug_dumped < DEBUG_DUMP_LIMIT:
+                logging.warning("DEBUG via for child %s: %s", cid, t.get("via"))
+                debug_dumped += 1
 
         if checked % 25 == 0 or checked == len(child_ids):
             logging.info(f"Checked {checked} child tickets, mapped {len(mapping)} parents so far")
