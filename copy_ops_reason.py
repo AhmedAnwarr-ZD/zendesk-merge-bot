@@ -3,6 +3,7 @@ import logging
 import requests
 import time
 import re
+import json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,10 +28,14 @@ BACKOFF_MULTIPLIER = 2
 
 last_api_call_time = 0
 
-# Regexes to extract parent id from comment bodies
-URL_TICKET_RE   = re.compile(rf"https://{re.escape(SUBDOMAIN)}\.zendesk\.com/(?:hc/en-us/requests|agent/tickets)/(\d+)")
-HASH_TICKET_RE  = re.compile(r"ticket\s*#\s*(\d+)", re.IGNORECASE)
+# Enhanced regexes to extract parent id from comment bodies
+URL_TICKET_RE = re.compile(rf"https://{re.escape(SUBDOMAIN)}\.zendesk\.com/(?:hc/en-us/requests|agent/tickets)/(\d+)")
+HASH_TICKET_RE = re.compile(r"ticket\s*#\s*(\d+)", re.IGNORECASE)
 LABEL_TICKET_RE = re.compile(r"ticket\s*:\s*(\d+)", re.IGNORECASE)
+ID_TICKET_RE = re.compile(r"ticket\s+id\s*:\s*(\d+)", re.IGNORECASE)
+REQUEST_RE = re.compile(r"request\s*#?\s*(\d+)", re.IGNORECASE)
+REFERENCE_RE = re.compile(r"(?:related\s+to|regarding|ref|reference)\s+(?:ticket\s*)?#?(\d+)", re.IGNORECASE)
+GENERIC_ID_RE = re.compile(r"(?:^|\s)(\d{6,})", re.MULTILINE)  # Any 6+ digit number that could be a ticket ID
 
 def wait_for_rate_limit():
     global last_api_call_time
@@ -110,16 +115,33 @@ def get_tickets_from_view(view_id):
     return tickets
 
 def get_ticket(ticket_id):
-    # Try to get full via; Zendesk may still omit source.from
-    url = f"{BASE_URL}/tickets/{ticket_id}.json?include=via_source"
-    data = zendesk_get_with_retry(url)
-    return data.get("ticket") if data else None
+    # Try multiple API calls to get all possible ticket data
+    base_url = f"{BASE_URL}/tickets/{ticket_id}.json"
+    
+    # Try with various include parameters
+    for include_params in [
+        "?include=via_source,audits,comment_count",
+        "?include=via_source,side_conversations", 
+        "?include=via_source",
+        ""
+    ]:
+        url = base_url + include_params
+        data = zendesk_get_with_retry(url)
+        if data and data.get("ticket"):
+            return data.get("ticket")
+    return None
 
 def get_ticket_audits(ticket_id):
-    # Audits often carry the parent link in the initial comment
-    url = f"{BASE_URL}/tickets/{ticket_id}/audits.json?include=via_source"
+    # Get audits with all possible includes
+    url = f"{BASE_URL}/tickets/{ticket_id}/audits.json?include=via_source,users"
     data = zendesk_get_with_retry(url)
     return data.get("audits", []) if data else []
+
+def get_side_conversations(ticket_id):
+    """Try to get side conversations which might have parent info"""
+    url = f"{BASE_URL}/tickets/{ticket_id}/side_conversations.json"
+    data = zendesk_get_with_retry(url)
+    return data.get("side_conversations", []) if data else []
 
 def get_user(user_id):
     url = f"{BASE_URL}/users/{user_id}.json"
@@ -142,7 +164,7 @@ def add_internal_note(ticket_id, body):
     payload = {"ticket": {"comment": {"body": body, "public": False}}}
     return zendesk_put_with_retry(url, payload)
 
-# ---------- Parent detection helpers ----------
+# ---------- Enhanced Parent detection helpers ----------
 def parent_from_ticket_via(ticket_obj):
     """
     Use ticket.via if it actually contains a parent.
@@ -155,6 +177,9 @@ def parent_from_ticket_via(ticket_obj):
     from_type = (from_obj.get("type") or "")
     parent_id = from_obj.get("id")
 
+    # Enhanced logging for debugging
+    logging.debug(f"Ticket via analysis: channel={channel}, rel={rel}, from_type={from_type}, parent_id={parent_id}")
+    
     if (channel in ("side_conversation", "side_conversation_ticket") or str(rel).lower() == "side_conversation"):
         if str(from_type).lower() == "ticket" and parent_id:
             try:
@@ -163,40 +188,87 @@ def parent_from_ticket_via(ticket_obj):
                 return None
     return None
 
-def _extract_parent_id_from_text(txt):
+def _extract_parent_id_from_text(txt, child_id):
+    """Enhanced text parsing with more patterns and validation"""
     if not txt:
         return None
-    # Try URL pattern first
-    m = URL_TICKET_RE.search(txt)
-    if m:
-        return int(m.group(1))
-    # Then "ticket #12345"
-    m = HASH_TICKET_RE.search(txt)
-    if m:
-        return int(m.group(1))
-    # Then "ticket: 12345"
-    m = LABEL_TICKET_RE.search(txt)
-    if m:
-        return int(m.group(1))
+    
+    logging.debug(f"Analyzing text for child {child_id}: {txt[:200]}...")
+    
+    # All regex patterns to try
+    patterns = [
+        ("URL", URL_TICKET_RE),
+        ("HASH", HASH_TICKET_RE),
+        ("LABEL", LABEL_TICKET_RE),
+        ("ID", ID_TICKET_RE),
+        ("REQUEST", REQUEST_RE),
+        ("REFERENCE", REFERENCE_RE),
+    ]
+    
+    for pattern_name, pattern in patterns:
+        matches = pattern.findall(txt)
+        for match in matches:
+            try:
+                potential_parent = int(match)
+                # Avoid self-references and ensure it's a reasonable ticket ID
+                if potential_parent != int(child_id) and potential_parent > 1000:
+                    logging.info(f"Found potential parent {potential_parent} using {pattern_name} pattern")
+                    return potential_parent
+            except (ValueError, TypeError):
+                continue
+    
+    # Last resort: look for any 6+ digit numbers that aren't the child ID
+    generic_matches = GENERIC_ID_RE.findall(txt)
+    for match in generic_matches:
+        try:
+            potential_parent = int(match)
+            if potential_parent != int(child_id) and potential_parent > 100000:
+                logging.info(f"Found potential parent {potential_parent} using generic ID pattern")
+                return potential_parent
+        except (ValueError, TypeError):
+            continue
+    
     return None
 
 def parent_from_audits(ticket_id):
     """
-    Fallback: parse audits' comment bodies for a link/reference to the parent ticket.
-    The first audit usually has a system-inserted blurb linking back to the parent.
+    Enhanced audit parsing with better debugging
     """
+    logging.debug(f"Searching audits for parent of ticket {ticket_id}")
     audits = get_ticket_audits(ticket_id)
+    
+    if not audits:
+        logging.warning(f"No audits found for ticket {ticket_id}")
+        return None
+    
+    logging.debug(f"Found {len(audits)} audits for ticket {ticket_id}")
+    
     # Scan in chronological order (oldest first)
-    for audit in sorted(audits, key=lambda a: a.get("id", 0)):
+    for i, audit in enumerate(sorted(audits, key=lambda a: a.get("id", 0))):
+        logging.debug(f"Processing audit {i+1}/{len(audits)} (ID: {audit.get('id')})")
+        
         # Each audit has an 'events' array; find Comment events
-        for ev in audit.get("events", []):
+        for j, ev in enumerate(audit.get("events", [])):
             if ev.get("type") != "Comment":
                 continue
-            parent = _extract_parent_id_from_text(ev.get("html_body")) or _extract_parent_id_from_text(ev.get("body"))
-            if parent:
-                return parent
+                
+            logging.debug(f"Found comment event {j+1} in audit {i+1}")
+            
+            # Try both html_body and body
+            for body_field in ["html_body", "body"]:
+                body_text = ev.get(body_field, "")
+                if body_text:
+                    logging.debug(f"Checking {body_field}: {body_text[:100]}...")
+                    parent = _extract_parent_id_from_text(body_text, ticket_id)
+                    if parent:
+                        logging.info(f"Found parent {parent} in audit comment {body_field}")
+                        return parent
+        
         # Also try the audit-level 'via' in case it holds a rel only
         via = audit.get("via") or {}
+        if via:
+            logging.debug(f"Audit via: {json.dumps(via, indent=2)}")
+        
         src = via.get("source") or {}
         from_obj = src.get("from") or {}
         if str(src.get("rel") or "").lower() == "side_conversation" and str(from_obj.get("type") or "").lower() == "ticket":
@@ -206,9 +278,25 @@ def parent_from_audits(ticket_id):
                     return int(pid)
                 except (TypeError, ValueError):
                     pass
+    
     return None
 
-# ---------- Mapping using robust per-ticket fetch ----------
+def parent_from_side_conversations(ticket_id):
+    """Try to find parent from side conversations API"""
+    side_convs = get_side_conversations(ticket_id)
+    for conv in side_convs:
+        # Side conversations might have references to the parent
+        for event in conv.get("events", []):
+            if event.get("type") == "create":
+                message = event.get("message", {})
+                body = message.get("body", "")
+                parent = _extract_parent_id_from_text(body, ticket_id)
+                if parent:
+                    logging.info(f"Found parent {parent} in side conversation")
+                    return parent
+    return None
+
+# ---------- Enhanced mapping with multiple detection methods ----------
 def build_parent_child_mapping(child_tickets):
     mapping = {}
     child_ids = [int(t["id"]) for t in child_tickets]
@@ -216,33 +304,51 @@ def build_parent_child_mapping(child_tickets):
 
     checked = 0
     for cid in child_ids:
+        logging.info(f"Analyzing ticket {cid} for parent relationships...")
+        
         t = get_ticket(cid)
         checked += 1
         parent_id = None
 
         if t:
+            # Method 1: Try ticket.via
             parent_id = parent_from_ticket_via(t)
+            if parent_id:
+                logging.info(f"Found parent {parent_id} via ticket.via for child {cid}")
 
+        # Method 2: Try audits if via didn't work
         if not parent_id:
             parent_id = parent_from_audits(cid)
+            if parent_id:
+                logging.info(f"Found parent {parent_id} via audits for child {cid}")
+
+        # Method 3: Try side conversations if still no parent
+        if not parent_id:
+            parent_id = parent_from_side_conversations(cid)
+            if parent_id:
+                logging.info(f"Found parent {parent_id} via side conversations for child {cid}")
 
         if parent_id:
             mapping[str(cid)] = parent_id
         else:
-            # One-time peek at via for visibility
-            via = (t or {}).get("via")
-            logging.warning("DEBUG via for child %s: %s", cid, via)
+            # Enhanced debugging output
+            via = (t or {}).get("via", {})
+            logging.warning(f"No parent found for child {cid}")
+            logging.warning(f"Complete via structure: {json.dumps(via, indent=2)}")
+            
+            # Also log the ticket subject for manual investigation
+            subject = (t or {}).get("subject", "")
+            logging.warning(f"Ticket subject: {subject}")
 
-        if checked % 25 == 0 or checked == len(child_ids):
+        if checked % 10 == 0 or checked == len(child_ids):
             logging.info(f"Checked {checked} child tickets, mapped {len(mapping)} parents so far")
 
     logging.info(f"Mapping complete: Found {len(mapping)} parent relationships out of {len(child_ids)}")
-    logging.info(f"Checked {checked} tickets in {len(child_ids)} single-ticket calls")
     return mapping
 
 # ---------- Main ----------
 def main():
-    logging.info("Starting Zendesk ticket processing...")
+    logging.info("Starting enhanced Zendesk ticket processing...")
 
     tickets = get_tickets_from_view(VIEW_ID)
     logging.info(f"Found {len(tickets)} tickets in view {VIEW_ID}.")
@@ -251,8 +357,22 @@ def main():
         logging.info("No tickets to process.")
         return
 
-    logging.info("Building parent-child mapping...")
+    # For debugging, let's also log some sample ticket data
+    if tickets:
+        sample_ticket = tickets[0]
+        logging.info(f"Sample ticket structure: {json.dumps({k: v for k, v in sample_ticket.items() if k in ['id', 'subject', 'status', 'created_at']}, indent=2)}")
+
+    logging.info("Building parent-child mapping with enhanced detection...")
     parent_mapping = build_parent_child_mapping(tickets)
+
+    if not parent_mapping:
+        logging.error("❌ No parent relationships found! This suggests a deeper issue.")
+        logging.error("Possible causes:")
+        logging.error("1. Side conversation tickets aren't properly linked in Zendesk")
+        logging.error("2. The API isn't returning expected via/audit data")
+        logging.error("3. Parent ticket references use different patterns than expected")
+        logging.error("Consider manually checking a few tickets in the Zendesk UI to understand the relationship structure.")
+        return
 
     user_cache = {}
     parent_ticket_cache = {}
