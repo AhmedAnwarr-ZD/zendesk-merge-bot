@@ -2,7 +2,7 @@ name: Merge Zendesk Tickets
 
 on:
   schedule:
-    - cron: "0 * * * *" # every 5 minute
+    - cron: "0 * * * *" # every 1 hour
   workflow_dispatch:
 
 jobs:
