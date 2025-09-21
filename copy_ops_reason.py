@@ -116,42 +116,75 @@ def get_user(user_id):
 def find_parent_ticket_id(child_ticket):
     """
     Find parent ticket by searching for earlier tickets from the same requester.
-    This is the method that worked in the diagnostic.
+    Enhanced with better debugging and fallback methods.
     """
     child_id = child_ticket['id']
     requester_id = child_ticket['requester_id']
     child_created = child_ticket['created_at']
     
-    # Search for tickets from the same requester
+    logging.info(f"Looking for parent of ticket {child_id}, requester: {requester_id}, created: {child_created}")
+    
+    # Method 1: Search API
     search_url = f"{BASE_URL}/search.json?query=type:ticket requester:{requester_id}"
     search_data = zendesk_get_with_retry(search_url)
     
-    if not search_data:
-        return None
-    
-    # Find the most recent ticket created before this one
-    potential_parents = []
-    for result in search_data.get('results', []):
-        result_id = result['id']
-        result_created = result.get('created_at', '')
+    if search_data and search_data.get('results'):
+        logging.info(f"Search found {len(search_data['results'])} tickets for requester {requester_id}")
         
-        # Must be different ticket, created before this one
-        if result_id != child_id and result_created < child_created:
-            potential_parents.append((result_id, result_created))
+        # Debug: log all tickets found for this requester
+        for result in search_data.get('results', []):
+            logging.info(f"  Found ticket {result['id']}, created: {result.get('created_at', 'N/A')}")
+        
+        # Find the most recent ticket created before this one
+        potential_parents = []
+        for result in search_data.get('results', []):
+            result_id = result['id']
+            result_created = result.get('created_at', '')
+            
+            # Must be different ticket, created before this one
+            if result_id != child_id and result_created < child_created:
+                potential_parents.append((result_id, result_created))
+                logging.info(f"  Potential parent: {result_id} (created: {result_created})")
+        
+        if potential_parents:
+            # Sort by creation date (most recent first) and return the most recent parent
+            potential_parents.sort(key=lambda x: x[1], reverse=True)
+            parent_id = potential_parents[0][0]
+            
+            # Validate parent ID is reasonable
+            if parent_id > 999999999:
+                logging.warning(f"Rejecting invalid parent ID {parent_id} for child {child_id}")
+                return None
+            
+            logging.info(f"Selected parent {parent_id} for child {child_id}")
+            return parent_id
+    else:
+        logging.warning(f"Search API returned no results for requester {requester_id}")
     
-    if not potential_parents:
-        return None
+    # Method 2: Try direct ticket ID approximation (fallback)
+    # Look for tickets with IDs just before this one
+    logging.info(f"Trying fallback method for ticket {child_id}")
     
-    # Sort by creation date (most recent first) and return the most recent parent
-    potential_parents.sort(key=lambda x: x[1], reverse=True)
-    parent_id = potential_parents[0][0]
+    for offset in range(1, 10):  # Check 9 tickets before this one
+        potential_parent_id = child_id - offset
+        parent_ticket = get_ticket(potential_parent_id)
+        
+        if parent_ticket:
+            parent_requester = parent_ticket.get('requester_id')
+            parent_created = parent_ticket.get('created_at', '')
+            
+            logging.info(f"  Checking ticket {potential_parent_id}: requester={parent_requester}, created={parent_created}")
+            
+            # Check if same requester and created before child
+            if (parent_requester == requester_id and 
+                parent_created < child_created):
+                logging.info(f"Found parent via fallback: {potential_parent_id} for child {child_id}")
+                return potential_parent_id
+        else:
+            logging.debug(f"  Ticket {potential_parent_id} not found")
     
-    # Validate parent ID is reasonable (not too long/weird)
-    if parent_id > 999999999:  # Too long to be a real ticket ID
-        logging.warning(f"Rejecting invalid parent ID {parent_id} for child {child_id}")
-        return None
-    
-    return parent_id
+    logging.warning(f"No parent found for ticket {child_id} using any method")
+    return None
 
 def get_ticket_field(ticket, field_id):
     for field in ticket.get("custom_fields", []):
