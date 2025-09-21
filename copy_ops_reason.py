@@ -113,104 +113,33 @@ def get_user(user_id):
     data = zendesk_get_with_retry(url)
     return data.get("user") if data else None
 
-def find_parent_reference_field():
-    """Find where Zendesk stores the parent ticket reference for side conversations"""
+def find_parent_ticket_id(child_ticket):
+    """
+    Extract parent ticket ID from side conversation external_id.
+    Format: zen:side_conversation:<uuid>:ticket:<parent_ticket_id>
+    """
+    child_id = child_ticket['id']
+    external_id = child_ticket.get('external_id', '')
     
-    # Get the known side conversation tickets
-    side_conversation_tickets = [201580, 201804]
-    expected_parents = [201576, 201796]
+    # Check if this is a side conversation
+    if not external_id or not external_id.startswith('zen:side_conversation:'):
+        logging.info(f"Ticket {child_id} is not a side conversation (external_id: {external_id})")
+        return None
     
-    for i, child_id in enumerate(side_conversation_tickets):
-        expected_parent = expected_parents[i]
-        
-        print(f"\n{'='*60}")
-        print(f"ANALYZING SIDE CONVERSATION TICKET: {child_id}")
-        print(f"Expected parent: {expected_parent}")
-        print(f"{'='*60}")
-        
-        # Get full ticket data
-        child_ticket = get_ticket(child_id)
-        if not child_ticket:
-            print(f"❌ Could not fetch ticket {child_id}")
-            continue
-        
-        print(f"✅ Fetched ticket {child_id}")
-        
-        # Look through ALL fields for the parent reference
-        print(f"\n📋 CUSTOM FIELDS:")
-        custom_fields = child_ticket.get('custom_fields', [])
-        for field in custom_fields:
-            field_id = field.get('id')
-            field_value = field.get('value')
-            if field_value:  # Only show fields with values
-                print(f"  Field {field_id}: {field_value}")
-                # Check if this field contains the parent ticket ID
-                if str(expected_parent) in str(field_value):
-                    print(f"    ⭐ FOUND PARENT REFERENCE! Field {field_id} contains {expected_parent}")
-        
-        print(f"\n📝 TICKET PROPERTIES:")
-        # Check various ticket properties that might contain parent reference
-        properties_to_check = [
-            'external_id', 'problem_id', 'forum_topic_id', 'group_id',
-            'organization_id', 'brand_id', 'ticket_form_id',
-            'raw_subject', 'description', 'tags'
-        ]
-        
-        for prop in properties_to_check:
-            value = child_ticket.get(prop)
-            if value:
-                print(f"  {prop}: {value}")
-                if str(expected_parent) in str(value):
-                    print(f"    ⭐ FOUND PARENT REFERENCE in {prop}!")
-        
-        print(f"\n📧 VIA INFORMATION:")
-        via = child_ticket.get('via', {})
-        print(f"  Channel: {via.get('channel')}")
-        print(f"  Source: {via.get('source', {})}")
-        
-        # Check if via source contains parent reference
-        source = via.get('source', {})
-        for key, value in source.items():
-            if value and str(expected_parent) in str(value):
-                print(f"    ⭐ FOUND PARENT REFERENCE in via.source.{key}!")
-        
-        print(f"\n🏷️ TAGS:")
-        tags = child_ticket.get('tags', [])
-        for tag in tags:
-            print(f"  Tag: {tag}")
-            if str(expected_parent) in tag:
-                print(f"    ⭐ FOUND PARENT REFERENCE in tag!")
-        
-        print(f"\n🔗 RELATED INFORMATION:")
-        # Check other possible fields
-        other_fields = ['url', 'created_at', 'updated_at', 'type', 'subject', 'raw_subject']
-        for field in other_fields:
-            value = child_ticket.get(field)
-            if value and str(expected_parent) in str(value):
-                print(f"    ⭐ FOUND PARENT REFERENCE in {field}!")
-        
-        # Print the entire ticket structure (truncated) for manual inspection
-        print(f"\n📋 FULL TICKET STRUCTURE (first 2000 chars):")
-        import json
-        full_ticket_str = json.dumps(child_ticket, indent=2, default=str)
-        print(full_ticket_str[:2000])
-        if len(full_ticket_str) > 2000:
-            print("... (truncated)")
-        
-        # Specifically search for the parent ID anywhere in the ticket data
-        if str(expected_parent) in full_ticket_str:
-            print(f"\n🎯 PARENT ID {expected_parent} FOUND SOMEWHERE IN TICKET DATA!")
-            # Find the exact location
-            lines = full_ticket_str.split('\n')
-            for line_num, line in enumerate(lines):
-                if str(expected_parent) in line:
-                    print(f"  Line {line_num}: {line.strip()}")
+    # Extract parent ticket ID from external_id
+    # Format: zen:side_conversation:<uuid>:ticket:<parent_ticket_id>
+    try:
+        if ':ticket:' in external_id:
+            parent_id = external_id.split(':ticket:')[-1]
+            parent_id = int(parent_id)
+            logging.info(f"Found parent {parent_id} for side conversation {child_id}")
+            return parent_id
         else:
-            print(f"\n❌ Parent ID {expected_parent} NOT found in ticket data")
-
-# Run this to find where the parent reference is stored
-if __name__ == "__main__":
-    find_parent_reference_field()
+            logging.warning(f"Side conversation {child_id} has malformed external_id: {external_id}")
+            return None
+    except (ValueError, IndexError) as e:
+        logging.error(f"Failed to parse parent ID from external_id '{external_id}' for ticket {child_id}: {e}")
+        return None
 
 def get_ticket_field(ticket, field_id):
     for field in ticket.get("custom_fields", []):
@@ -238,7 +167,7 @@ def main():
         logging.info("No tickets to process.")
         return
 
-    # Build parent-child mapping using the working method
+    # Build parent-child mapping using the external_id method
     logging.info("Finding parent relationships...")
     parent_mapping = {}
     
