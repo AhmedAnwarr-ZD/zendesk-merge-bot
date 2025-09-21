@@ -113,78 +113,104 @@ def get_user(user_id):
     data = zendesk_get_with_retry(url)
     return data.get("user") if data else None
 
-def find_parent_ticket_id(child_ticket):
-    """
-    Find parent ticket by searching for earlier tickets from the same requester.
-    Enhanced with better debugging and fallback methods.
-    """
-    child_id = child_ticket['id']
-    requester_id = child_ticket['requester_id']
-    child_created = child_ticket['created_at']
+def find_parent_reference_field():
+    """Find where Zendesk stores the parent ticket reference for side conversations"""
     
-    logging.info(f"Looking for parent of ticket {child_id}, requester: {requester_id}, created: {child_created}")
+    # Get the known side conversation tickets
+    side_conversation_tickets = [201580, 201804]
+    expected_parents = [201576, 201796]
     
-    # Method 1: Search API
-    search_url = f"{BASE_URL}/search.json?query=type:ticket requester:{requester_id}"
-    search_data = zendesk_get_with_retry(search_url)
-    
-    if search_data and search_data.get('results'):
-        logging.info(f"Search found {len(search_data['results'])} tickets for requester {requester_id}")
+    for i, child_id in enumerate(side_conversation_tickets):
+        expected_parent = expected_parents[i]
         
-        # Debug: log all tickets found for this requester
-        for result in search_data.get('results', []):
-            logging.info(f"  Found ticket {result['id']}, created: {result.get('created_at', 'N/A')}")
+        print(f"\n{'='*60}")
+        print(f"ANALYZING SIDE CONVERSATION TICKET: {child_id}")
+        print(f"Expected parent: {expected_parent}")
+        print(f"{'='*60}")
         
-        # Find the most recent ticket created before this one
-        potential_parents = []
-        for result in search_data.get('results', []):
-            result_id = result['id']
-            result_created = result.get('created_at', '')
-            
-            # Must be different ticket, created before this one
-            if result_id != child_id and result_created < child_created:
-                potential_parents.append((result_id, result_created))
-                logging.info(f"  Potential parent: {result_id} (created: {result_created})")
+        # Get full ticket data
+        child_ticket = get_ticket(child_id)
+        if not child_ticket:
+            print(f"❌ Could not fetch ticket {child_id}")
+            continue
         
-        if potential_parents:
-            # Sort by creation date (most recent first) and return the most recent parent
-            potential_parents.sort(key=lambda x: x[1], reverse=True)
-            parent_id = potential_parents[0][0]
-            
-            # Validate parent ID is reasonable
-            if parent_id > 999999999:
-                logging.warning(f"Rejecting invalid parent ID {parent_id} for child {child_id}")
-                return None
-            
-            logging.info(f"Selected parent {parent_id} for child {child_id}")
-            return parent_id
-    else:
-        logging.warning(f"Search API returned no results for requester {requester_id}")
-    
-    # Method 2: Try direct ticket ID approximation (fallback)
-    # Look for tickets with IDs just before this one
-    logging.info(f"Trying fallback method for ticket {child_id}")
-    
-    for offset in range(1, 10):  # Check 9 tickets before this one
-        potential_parent_id = child_id - offset
-        parent_ticket = get_ticket(potential_parent_id)
+        print(f"✅ Fetched ticket {child_id}")
         
-        if parent_ticket:
-            parent_requester = parent_ticket.get('requester_id')
-            parent_created = parent_ticket.get('created_at', '')
-            
-            logging.info(f"  Checking ticket {potential_parent_id}: requester={parent_requester}, created={parent_created}")
-            
-            # Check if same requester and created before child
-            if (parent_requester == requester_id and 
-                parent_created < child_created):
-                logging.info(f"Found parent via fallback: {potential_parent_id} for child {child_id}")
-                return potential_parent_id
+        # Look through ALL fields for the parent reference
+        print(f"\n📋 CUSTOM FIELDS:")
+        custom_fields = child_ticket.get('custom_fields', [])
+        for field in custom_fields:
+            field_id = field.get('id')
+            field_value = field.get('value')
+            if field_value:  # Only show fields with values
+                print(f"  Field {field_id}: {field_value}")
+                # Check if this field contains the parent ticket ID
+                if str(expected_parent) in str(field_value):
+                    print(f"    ⭐ FOUND PARENT REFERENCE! Field {field_id} contains {expected_parent}")
+        
+        print(f"\n📝 TICKET PROPERTIES:")
+        # Check various ticket properties that might contain parent reference
+        properties_to_check = [
+            'external_id', 'problem_id', 'forum_topic_id', 'group_id',
+            'organization_id', 'brand_id', 'ticket_form_id',
+            'raw_subject', 'description', 'tags'
+        ]
+        
+        for prop in properties_to_check:
+            value = child_ticket.get(prop)
+            if value:
+                print(f"  {prop}: {value}")
+                if str(expected_parent) in str(value):
+                    print(f"    ⭐ FOUND PARENT REFERENCE in {prop}!")
+        
+        print(f"\n📧 VIA INFORMATION:")
+        via = child_ticket.get('via', {})
+        print(f"  Channel: {via.get('channel')}")
+        print(f"  Source: {via.get('source', {})}")
+        
+        # Check if via source contains parent reference
+        source = via.get('source', {})
+        for key, value in source.items():
+            if value and str(expected_parent) in str(value):
+                print(f"    ⭐ FOUND PARENT REFERENCE in via.source.{key}!")
+        
+        print(f"\n🏷️ TAGS:")
+        tags = child_ticket.get('tags', [])
+        for tag in tags:
+            print(f"  Tag: {tag}")
+            if str(expected_parent) in tag:
+                print(f"    ⭐ FOUND PARENT REFERENCE in tag!")
+        
+        print(f"\n🔗 RELATED INFORMATION:")
+        # Check other possible fields
+        other_fields = ['url', 'created_at', 'updated_at', 'type', 'subject', 'raw_subject']
+        for field in other_fields:
+            value = child_ticket.get(field)
+            if value and str(expected_parent) in str(value):
+                print(f"    ⭐ FOUND PARENT REFERENCE in {field}!")
+        
+        # Print the entire ticket structure (truncated) for manual inspection
+        print(f"\n📋 FULL TICKET STRUCTURE (first 2000 chars):")
+        import json
+        full_ticket_str = json.dumps(child_ticket, indent=2, default=str)
+        print(full_ticket_str[:2000])
+        if len(full_ticket_str) > 2000:
+            print("... (truncated)")
+        
+        # Specifically search for the parent ID anywhere in the ticket data
+        if str(expected_parent) in full_ticket_str:
+            print(f"\n🎯 PARENT ID {expected_parent} FOUND SOMEWHERE IN TICKET DATA!")
+            # Find the exact location
+            lines = full_ticket_str.split('\n')
+            for line_num, line in enumerate(lines):
+                if str(expected_parent) in line:
+                    print(f"  Line {line_num}: {line.strip()}")
         else:
-            logging.debug(f"  Ticket {potential_parent_id} not found")
-    
-    logging.warning(f"No parent found for ticket {child_id} using any method")
-    return None
+            print(f"\n❌ Parent ID {expected_parent} NOT found in ticket data")
+
+# Run this to find where the parent reference is stored
+if __name__ == "__main__":
+    find_parent_reference_field()
 
 def get_ticket_field(ticket, field_id):
     for field in ticket.get("custom_fields", []):
