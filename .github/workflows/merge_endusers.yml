@@ -1,0 +1,60 @@
+name: Merge Zendesk End-Users
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only (true/false)"
+        required: true
+        default: "true"
+      max_merges:
+        description: "Safety cap for merges"
+        required: true
+        default: "200"
+      include_since_epoch:
+        description: "Incremental start_time (unix epoch). Use 0 for full history."
+        required: true
+        default: "0"
+
+# avoid overlapping runs
+concurrency:
+  group: merge-endusers
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r .github/workflows/requirements.txt
+
+      - name: Run merge bot (dry-run by default)
+        env:
+          # required secrets
+          SUBDOMAIN: ${{ secrets.ZD_SUBDOMAIN }}
+          EMAIL: ${{ secrets.ZD_EMAIL }}
+          API_TOKEN: ${{ secrets.ZD_API_TOKEN }}
+
+          # optional tunables (your script reads these)
+          PER_PAGE: "1000"
+          INCLUDE_SINCE_EPOCH: ${{ inputs.include_since_epoch }}
+          MERGE_DELAY_SEC: "0.25"
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_MERGES: ${{ inputs.max_merges }}
+          PREFER_VERIFIED_EMAIL: "true"
+        run: |
+          python .github/workflows/merge_bot.py
