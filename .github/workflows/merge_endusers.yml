@@ -49,12 +49,16 @@ jobs:
           EMAIL: ${{ secrets.ZD_EMAIL }}
           API_TOKEN: ${{ secrets.ZD_API_TOKEN }}
 
-          # optional tunables (your script reads these)
+          # optional tunables
           PER_PAGE: "1000"
           INCLUDE_SINCE_EPOCH: ${{ inputs.include_since_epoch }}
           MERGE_DELAY_SEC: "0.25"
           DRY_RUN: ${{ inputs.dry_run }}
           MAX_MERGES: ${{ inputs.max_merges }}
           PREFER_VERIFIED_EMAIL: "true"
+          SKIP_SUSPENDED: "false"
+          LOG_PREVIEW: "true"
+          RETRY_MAX: "5"
+          RETRY_BASE_DELAY: "0.8"
         run: |
           python .github/workflows/merge_bot.py
