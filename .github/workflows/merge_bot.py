@@ -29,6 +29,9 @@ RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "0.8"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "100"))
 MERGE_DELAY_SEC = float(os.getenv("MERGE_DELAY_SEC", "0.25"))
 
+# new: toggle verbose per-merge details
+LOG_DETAILS = os.getenv("LOG_DETAILS", "true").lower() == "true"
+
 # ---------- helpers ----------
 def _sanitize_host(value: str) -> str:
     v = value.lower().strip()
@@ -105,6 +108,15 @@ def norm_phone(p: str | None) -> str | None:
             s = "+966" + s[1:]
     return s
 
+# handy log formatting
+def user_url(user_id: int) -> str:
+    return f"https://{HOST}/agent/users/{user_id}"
+
+def fmt_user(u: dict) -> str:
+    if not u:
+        return "?, ?, ?, ?, ?"
+    return f"{u.get('id')} | {u.get('name','?')} | {u.get('email','-')} | {u.get('phone','-')} | {user_url(u.get('id'))}"
+
 # ---------- API bits ----------
 def search_solved_tickets_since(since_iso: str):
     """
@@ -149,7 +161,6 @@ def search_users_by_term(term: str) -> list[dict]:
     Zendesk Users Search. We pass the raw term (email or phone).
     We'll filter exact matches after normalization.
     """
-    # users search endpoint:
     resp = zget("/api/v2/users/search.json", {"query": term})
     return resp.get("users", [])
 
@@ -272,6 +283,9 @@ def main():
         cluster_users = [req_by_id[uid] for uid in cluster_ids if uid in req_by_id]
         survivor = pick_survivor(cluster_users)
 
+        if LOG_DETAILS:
+            logging.info(f"[cluster] survivor ⇒ {fmt_user(req_by_id.get(survivor))}")
+
         for uid in cluster_ids:
             if uid == survivor:
                 continue
@@ -288,12 +302,40 @@ def main():
     planned = [(s, t, r, k) for (s, t), (r, k) in uniq.items()]
 
     logging.info(f"Planned merges: {len(planned)} (cap={MAX_MERGES}, dry_run={DRY_RUN})")
+
     merged = 0
     for src, tgt, reason, key in planned[:MAX_MERGES]:
-        logging.info(f"→ merge by {reason}: {key} | {src} → {tgt} | solved[src]={requester_counts.get(src,0)} solved[tgt]={requester_counts.get(tgt,0)}")
+        src_user = req_by_id.get(src) or {}
+        tgt_user = req_by_id.get(tgt) or {}
+
+        if LOG_DETAILS:
+            logging.info(
+                "→ merge by %s: %s\n    SRC: %s\n    TGT: %s\n    solved[src]=%s solved[tgt]=%s",
+                reason, key,
+                fmt_user(src_user),
+                fmt_user(tgt_user),
+                requester_counts.get(src, 0),
+                requester_counts.get(tgt, 0),
+            )
+        else:
+            logging.info(
+                "→ %s | %s → %s | solved[src]=%s solved[tgt]=%s",
+                reason, src, tgt,
+                requester_counts.get(src, 0),
+                requester_counts.get(tgt, 0),
+            )
+
         if merge_user(src, tgt):
             merged += 1
             sleep(MERGE_DELAY_SEC)
+
+    # summarize unique survivors you can click
+    survivors = sorted({tgt for _, tgt, _, _ in planned[:MAX_MERGES]})
+    if survivors and LOG_DETAILS:
+        logging.info("=== Survivors in this run ===")
+        for sid in survivors:
+            u = req_by_id.get(sid, {})
+            logging.info("• %s", fmt_user(u))
 
     logging.info(f"Done. Merged this run: {merged} (dry_run={DRY_RUN})")
 
