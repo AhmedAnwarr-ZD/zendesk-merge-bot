@@ -2,13 +2,13 @@ name: Merge Zendesk End-Users (hourly minimal)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # every hour at minute 0 (UTC)
+    - cron: "0 * * * *"   # still runs hourly
   workflow_dispatch:
     inputs:
       window_minutes:
         description: "Lookback window in minutes"
         required: true
-        default: "60"
+        default: "1440"   # 24 hours
       dry_run:
         description: "Preview only (true/false)"
         required: true
@@ -44,14 +44,12 @@ jobs:
 
       - name: Run merge (hourly, minimal)
         env:
-          # Required secrets — DO NOT rename
           SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
           EMAIL: ${{ secrets.EMAIL }}
           API_TOKEN: ${{ secrets.API_TOKEN }}
 
-          # Tunables
           DRY_RUN: ${{ inputs.dry_run || 'true' }}
-          WINDOW_MINUTES: ${{ inputs.window_minutes || '60' }}
+          WINDOW_MINUTES: ${{ inputs.window_minutes || '1440' }}   # <—
           MAX_MERGES: ${{ inputs.max_merges || '50' }}
           RETRY_MAX: "5"
           RETRY_BASE_DELAY: "0.8"
