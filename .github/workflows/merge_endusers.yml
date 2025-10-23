@@ -50,9 +50,9 @@ jobs:
       - name: Run merge bot (dry-run by default)
         env:
           # required secrets
-          SUBDOMAIN: ${{ secrets.ZD_SUBDOMAIN }}
-          EMAIL: ${{ secrets.ZD_EMAIL }}
-          API_TOKEN: ${{ secrets.ZD_API_TOKEN }}
+          SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
+          EMAIL: ${{ secrets.EMAIL }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
 
           # optional tunables
           PER_PAGE: "1000"
