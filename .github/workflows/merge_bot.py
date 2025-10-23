@@ -29,8 +29,12 @@ RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "0.8"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "100"))
 MERGE_DELAY_SEC = float(os.getenv("MERGE_DELAY_SEC", "0.25"))
 
-# new: toggle verbose per-merge details
+# verbose per-merge details
 LOG_DETAILS = os.getenv("LOG_DETAILS", "true").lower() == "true"
+
+# identity cleanup toggles
+CLEAN_DUPLICATE_IDENTITIES = os.getenv("CLEAN_DUPLICATE_IDENTITIES", "true").lower() == "true"
+IDENTITY_DELETE_DELAY_SEC = float(os.getenv("IDENTITY_DELETE_DELAY_SEC", "0.2"))
 
 # ---------- helpers ----------
 def _sanitize_host(value: str) -> str:
@@ -85,6 +89,10 @@ def zput(path, payload):
     url = f"{BASE}{path}"
     return _request_with_retries("PUT", url, json=payload)
 
+def zdelete(path):
+    url = f"{BASE}{path}"
+    return _request_with_retries("DELETE", url)
+
 def preflight():
     r = _request_with_retries("GET", f"{BASE}/api/v2/account.json")
     if r.status_code != 200:
@@ -116,6 +124,60 @@ def fmt_user(u: dict) -> str:
     if not u:
         return "?, ?, ?, ?, ?"
     return f"{u.get('id')} | {u.get('name','?')} | {u.get('email','-')} | {u.get('phone','-')} | {user_url(u.get('id'))}"
+
+# ---------- identities helpers ----------
+def list_identities(user_id: int) -> list[dict]:
+    try:
+        resp = zget(f"/api/v2/users/{user_id}/identities.json")
+        return resp.get("identities", [])
+    except Exception as e:
+        logging.warning(f"identities fetch failed for {user_id}: {e}")
+        return []
+
+def norm_phone_identity(val: str | None) -> str | None:
+    # normalize like norm_phone, but tolerate formatting
+    return norm_phone(val)
+
+def dedupe_duplicate_phone_identities(user_id: int):
+    """
+    Remove duplicate phone identities differing only by formatting.
+    Keep the primary identity in each group if present, else keep the first.
+    """
+    idents = list_identities(user_id)
+    phones = [i for i in idents if i.get("type") in ("phone_number", "phone")]
+    if not phones:
+        return
+
+    groups: dict[str, list[dict]] = {}
+    for ident in phones:
+        key = norm_phone_identity(ident.get("value"))
+        if not key:
+            continue
+        groups.setdefault(key, []).append(ident)
+
+    deletions = []
+    for key, id_list in groups.items():
+        if len(id_list) <= 1:
+            continue
+        keeper = next((i for i in id_list if i.get("primary")), id_list[0])
+        for ident in id_list:
+            if ident["id"] == keeper["id"]:
+                continue
+            deletions.append((ident["id"], ident.get("value"), key, keeper["id"]))
+
+    if not deletions:
+        return
+
+    for ident_id, raw_value, norm_value, keeper_id in deletions:
+        if DRY_RUN:
+            logging.info(f"[DRY-RUN] would delete duplicate phone identity {ident_id} '{raw_value}' (→ {norm_value}) on user {user_id}; keeping {keeper_id}")
+        else:
+            r = zdelete(f"/api/v2/users/{user_id}/identities/{ident_id}.json")
+            if r.status_code in (200, 204):
+                logging.info(f"🧹 deleted duplicate phone identity {ident_id} '{raw_value}' (→ {norm_value}) on user {user_id}")
+            else:
+                logging.warning(f"Failed to delete identity {ident_id} on user {user_id}: {r.status_code} {r.text}")
+            sleep(IDENTITY_DELETE_DELAY_SEC)
 
 # ---------- API bits ----------
 def search_solved_tickets_since(since_iso: str):
@@ -190,7 +252,7 @@ def main():
 
     for t in search_solved_tickets_since(since_iso):
         rid = t.get("requester_id")
-        if not rid: 
+        if not rid:
             continue
         requester_ids.add(rid)
         requester_counts[rid] = requester_counts.get(rid, 0) + 1
@@ -336,6 +398,11 @@ def main():
         for sid in survivors:
             u = req_by_id.get(sid, {})
             logging.info("• %s", fmt_user(u))
+
+    # cleanup: remove duplicate phone identities on survivors
+    if CLEAN_DUPLICATE_IDENTITIES and survivors:
+        for sid in survivors:
+            dedupe_duplicate_phone_identities(sid)
 
     logging.info(f"Done. Merged this run: {merged} (dry_run={DRY_RUN})")
 
