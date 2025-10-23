@@ -12,7 +12,7 @@ on:
       dry_run:
         description: "Preview only (true/false)"
         required: true
-        default: "true"
+        default: "false"
       max_merges:
         description: "Safety cap per run"
         required: true
@@ -48,7 +48,7 @@ jobs:
           EMAIL: ${{ secrets.EMAIL }}
           API_TOKEN: ${{ secrets.API_TOKEN }}
 
-          DRY_RUN: ${{ inputs.dry_run || 'true' }}
+          DRY_RUN: "false"
           WINDOW_MINUTES: ${{ inputs.window_minutes || '1440' }}   # <—
           MAX_MERGES: ${{ inputs.max_merges || '50' }}
           RETRY_MAX: "5"
