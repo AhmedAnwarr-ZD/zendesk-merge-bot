@@ -64,12 +64,20 @@ def _request_with_retries(method, url, **kwargs):
         r = SESSION.request(method, url, timeout=30, **kwargs)
         if r.status_code < 400:
             return r
+        # soft limits / transient
         if r.status_code in (429, 500, 502, 503, 504):
-            wait = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            retry_after = r.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    wait = float(retry_after)
+                except ValueError:
+                    wait = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            else:
+                wait = RETRY_BASE_DELAY * (2 ** (attempt - 1))
             logging.warning(f"{method} {url} -> {r.status_code}; retry {attempt}/{RETRY_MAX} in {wait:.1f}s")
             sleep(wait)
             continue
-        # hard error (4xx other than 429)
+        # hard 4xx
         return r
     return r  # last response
 
