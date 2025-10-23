@@ -15,9 +15,9 @@ logging.basicConfig(
 )
 
 # ========= Config via env =========
-SUBDOMAIN = os.environ["SUBDOMAIN"]
-EMAIL = os.environ["EMAIL"]
-API_TOKEN = os.environ["API_TOKEN"]
+SUBDOMAIN_RAW = os.environ["SUBDOMAIN"].strip()
+EMAIL = os.environ["EMAIL"].strip()
+API_TOKEN = os.environ["API_TOKEN"].strip()
 
 # Optional tuning
 PER_PAGE = int(os.getenv("PER_PAGE", "1000"))                 # time-based export page size
@@ -32,12 +32,31 @@ LOG_PREVIEW = os.getenv("LOG_PREVIEW", "true").lower() == "true"
 RETRY_MAX = int(os.getenv("RETRY_MAX", "5"))
 RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "0.8"))
 
-BASE = f"https://{SUBDOMAIN}.zendesk.com"
-AUTH = (f"{EMAIL}/token", API_TOKEN)
-SESSION = requests.Session()
-SESSION.auth = AUTH
-SESSION.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
+def _sanitize_host(value: str) -> str:
+    """
+    Accepts either:
+      - bare subdomain: 'acme'
+      - zendesk host: 'acme.zendesk.com'
+      - URL: 'https://acme.zendesk.com' or 'http://support.acme.com'
+      - custom host: 'support.acme.com'
+    Returns a host like 'acme.zendesk.com' or 'support.acme.com'.
+    """
+    v = value.strip().lower()
+    if v.startswith("http://") or v.startswith("https://"):
+        v = v.split("://", 1)[1]
+    v = v.split("/", 1)[0]
+    if not v:
+        raise SystemExit("SUBDOMAIN is empty. Set it to your Zendesk subdomain (e.g., 'aleena').")
+    if "." in v:
+        return v
+    return f"{v}.zendesk.com"
 
+HOST = _sanitize_host(SUBDOMAIN_RAW)
+BASE = f"https://{HOST}"
+
+SESSION = requests.Session()
+SESSION.auth = (f"{EMAIL}/token", API_TOKEN)
+SESSION.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
 
 # ========= HTTP helpers with retries =========
 def _request_with_retries(method, url, **kwargs):
@@ -54,7 +73,6 @@ def _request_with_retries(method, url, **kwargs):
         return r
     return r  # last response
 
-
 def zget(url, params=None):
     if params:
         url = f"{url}?{urlencode(params)}"
@@ -63,17 +81,14 @@ def zget(url, params=None):
         raise Exception(f"GET {url} -> {r.status_code}: {r.text}")
     return r.json()
 
-
 def zput(url, payload):
     return _request_with_retries("PUT", url, json=payload)
-
 
 # ========= Normalizers & utils =========
 def norm_email(e):
     if not e:
         return None
     return e.strip().lower()
-
 
 def norm_phone(p):
     if not p:
@@ -86,9 +101,7 @@ def norm_phone(p):
         # heuristic: if KSA local (e.g., 05xxxxxxxx), turn to +9665xxxxxxxx
         if s.startswith("0") and len(s) in (9, 10):
             s = "+966" + s[1:]
-        # otherwise leave as-is; identical-digit strings still cluster
     return s
-
 
 def parse_dt(s):
     try:
@@ -96,10 +109,8 @@ def parse_dt(s):
     except Exception:
         return datetime(2100, 1, 1, tzinfo=timezone.utc)
 
-
 def role_is_end_user(user):
     return (user.get("role") or "").lower() == "end-user"
-
 
 def pick_survivor(users):
     """
@@ -114,6 +125,16 @@ def pick_survivor(users):
             candidates = verified
     return sorted(candidates, key=lambda u: parse_dt(u.get("created_at") or ""))[0]
 
+# ========= Preflight =========
+def preflight():
+    """Fail fast if host/creds are wrong; also logs which host we're hitting."""
+    try:
+        r = SESSION.get(f"{BASE}/api/v2/account.json", timeout=20)
+        if r.status_code != 200:
+            raise Exception(f"Preflight failed {r.status_code}: {r.text}")
+        logging.info(f"Connected to Zendesk host: {HOST}")
+    except requests.exceptions.RequestException as e:
+        raise SystemExit(f"Preflight connection error to {BASE}: {e}")
 
 # ========= Incremental export =========
 def incremental_users(start_time):
@@ -148,7 +169,6 @@ def incremental_users(start_time):
                 break
             url, params = next_page, None
 
-
 # ========= Merge operation =========
 def merge_user(source_id, target_id):
     """
@@ -168,9 +188,9 @@ def merge_user(source_id, target_id):
     logging.error(f"❌ merge failed {source_id} → {target_id} :: {resp.status_code} {resp.text}")
     return False
 
-
 # ========= Main =========
 def main():
+    preflight()
     logging.info("Scanning users…")
     by_email = defaultdict(list)
     by_phone = defaultdict(list)
@@ -244,7 +264,6 @@ def main():
             time.sleep(MERGE_DELAY_SEC)
 
     logging.info(f"Done. Total merged: {merged} (dry_run={DRY_RUN})")
-
 
 if __name__ == "__main__":
     main()
