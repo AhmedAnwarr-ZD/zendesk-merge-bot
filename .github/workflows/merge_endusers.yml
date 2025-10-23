@@ -47,7 +47,6 @@ jobs:
             pip install requests
           fi
 
-
       - name: Run merge bot (dry-run by default)
         env:
           # required secrets
