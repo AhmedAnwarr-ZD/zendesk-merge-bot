@@ -58,4 +58,4 @@ jobs:
           PAGE_SIZE: "100"
           MERGE_DELAY_SEC: "0.25"
         run: |
-          python .github/workflows/merge_hourly_minimal.py
+          python .github/workflows/merge_bot.py
