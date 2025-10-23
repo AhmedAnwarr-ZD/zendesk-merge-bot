@@ -1,25 +1,21 @@
-name: Merge Zendesk End-Users (hourly minimal)
+name: Merge Zendesk End-Users (daily, last 5 days)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # still runs hourly
+    - cron: "0 0 * * *"   # every 24h at 00:00 UTC
   workflow_dispatch:
     inputs:
-      window_minutes:
-        description: "Lookback window in minutes"
-        required: true
-        default: "1440"   # 24 hours
       dry_run:
         description: "Preview only (true/false)"
         required: true
-        default: "false"
+        default: "true"
       max_merges:
         description: "Safety cap per run"
         required: true
-        default: "50"
+        default: "100"
 
 concurrency:
-  group: merge-endusers-hourly
+  group: merge-endusers-daily
   cancel-in-progress: false
 
 permissions:
@@ -42,18 +38,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run merge (hourly, minimal)
+      - name: Run merge (daily, 5-day window)
         env:
+          # required secrets (unchanged)
           SUBDOMAIN: ${{ secrets.SUBDOMAIN }}
           EMAIL: ${{ secrets.EMAIL }}
           API_TOKEN: ${{ secrets.API_TOKEN }}
 
-          DRY_RUN: "false"
-          WINDOW_MINUTES: ${{ inputs.window_minutes || '1440' }}   # <—
-          MAX_MERGES: ${{ inputs.max_merges || '50' }}
+          # lookback window: 5 days = 7200 minutes
+          WINDOW_MINUTES: "7200"
+
+          # behavior
+          DRY_RUN: ${{ inputs.dry_run || 'true' }}
+          MAX_MERGES: ${{ inputs.max_merges || '100' }}
           RETRY_MAX: "5"
           RETRY_BASE_DELAY: "0.8"
           PAGE_SIZE: "100"
           MERGE_DELAY_SEC: "0.25"
+          LOG_DETAILS: "true"
+          CLEAN_DUPLICATE_IDENTITIES: "true"
+          IDENTITY_DELETE_DELAY_SEC: "0.2"
         run: |
           python .github/workflows/merge_bot.py
