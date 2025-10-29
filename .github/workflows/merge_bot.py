@@ -29,6 +29,11 @@ RETRY_BASE_DELAY = float(os.getenv("RETRY_BASE_DELAY", "0.8"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "100"))
 MERGE_DELAY_SEC = float(os.getenv("MERGE_DELAY_SEC", "0.25"))
 
+
+# maximum minutes per search chunk; dynamically reduced on 422
+CHUNK_MINUTES = int(os.getenv("CHUNK_MINUTES", "360"))  # 6 hours default, adaptive
+MIN_CHUNK_MINUTES = int(os.getenv("MIN_CHUNK_MINUTES", "30"))  # floor to avoid thrashing
+
 # verbose per-merge details
 LOG_DETAILS = os.getenv("LOG_DETAILS", "true").lower() == "true"
 
@@ -198,7 +203,78 @@ def search_solved_tickets_since(since_iso: str):
         url, params = next_page, None
         sleep(0.2)
 
-def users_show_many(ids: list[int]) -> list[dict]:
+
+def _search_chunk(start_iso: str, end_iso: str):
+    """Yield solved tickets in [start_iso, end_iso] (end exclusive) using search pagination."""
+    q = f'type:ticket status:solved solved>{start_iso} solved<={end_iso}'
+    params = {"query": q, "per_page": PAGE_SIZE}
+    url = "/api/v2/search.json"
+    pages = 0
+    while True:
+        resp = zget(url, params)
+        results = resp.get("results", [])
+        for t in results:
+            yield t
+        pages += 1
+        next_page = resp.get("next_page")
+        if not next_page:
+            break
+        # Guard against Zendesk 1000-result window by not stepping past page 10
+        if pages >= 10:
+            # If we were to follow page 11 we'd likely hit 422.
+            break
+        url, params = next_page, None
+        sleep(0.2)
+
+def iter_solved_tickets(since_iso: str, until_iso: str):
+    """
+    Iterate solved tickets between since_iso and until_iso by slicing the time window
+    into chunks. If Zendesk returns a 422 'Search Response Limits', we cut the chunk size
+    and retry, down to MIN_CHUNK_MINUTES.
+    """
+    # parse helpers
+    def parse(dt_s: str):
+        try:
+            return datetime.fromisoformat(dt_s.replace("Z","+00:00"))
+        except Exception:
+            # very defensive; shouldn't happen as we control the format
+            return datetime.now(timezone.utc)
+
+    start_dt = parse(since_iso)
+    until_dt = parse(until_iso)
+
+    chunk_minutes = max(MIN_CHUNK_MINUTES, CHUNK_MINUTES)
+    while start_dt < until_dt:
+        tentative_end = min(start_dt + timedelta(minutes=chunk_minutes), until_dt)
+        start_iso = iso_utc(start_dt)
+        end_iso = iso_utc(tentative_end)
+        try:
+            for t in _search_chunk(start_iso, end_iso):
+                yield t
+            # chunk succeeded; advance
+            start_dt = tentative_end
+            # small sleep to be kind to API
+            sleep(0.1)
+        except Exception as e:
+            msg = str(e)
+            if "422" in msg and "Invalid search" in msg:
+                # reduce chunk and retry same interval
+                new_chunk = max(MIN_CHUNK_MINUTES, chunk_minutes // 2)
+                if new_chunk >= chunk_minutes and chunk_minutes > MIN_CHUNK_MINUTES:
+                    new_chunk = MIN_CHUNK_MINUTES
+                if new_chunk == chunk_minutes:
+                    # we're at floor; skip this interval to avoid getting stuck
+                    logging.warning(f"Window [{start_iso} → {end_iso}] still too large at floor {MIN_CHUNK_MINUTES}m; skipping to next window.")
+                    start_dt = tentative_end
+                else:
+                    logging.warning(f"Search window too large ({chunk_minutes}m). Reducing to {new_chunk}m and retrying.")
+                    chunk_minutes = new_chunk
+                # continue loop without advancing start_dt if we reduced
+                sleep(0.2)
+            else:
+                # unrelated error; propagate
+                raise
+def users_show_manydef users_show_many(ids: list[int]) -> list[dict]:
     users = []
     for i in range(0, len(ids), 100):
         chunk = ids[i:i+100]
@@ -250,7 +326,8 @@ def main():
     requester_counts: dict[int, int] = {}
     requester_ids: set[int] = set()
 
-    for t in search_solved_tickets_since(since_iso):
+    end_iso = iso_utc(end)
+    for t in iter_solved_tickets(since_iso, end_iso):
         rid = t.get("requester_id")
         if not rid:
             continue
