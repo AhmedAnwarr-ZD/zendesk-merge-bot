@@ -274,7 +274,7 @@ def iter_solved_tickets(since_iso: str, until_iso: str):
             else:
                 # unrelated error; propagate
                 raise
-def users_show_manydef users_show_many(ids: list[int]) -> list[dict]:
+def users_show_many(ids: list[int]) -> list[dict]:
     users = []
     for i in range(0, len(ids), 100):
         chunk = ids[i:i+100]
