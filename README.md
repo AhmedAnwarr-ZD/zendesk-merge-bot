@@ -1,75 +1,94 @@
-# Zendesk User Merge & Identity Normalizer (Windowed)
+# Zendesk Automation Suite  
+### (Parent–Child Ops Reason Copier + Duplicate Ticket Merge Bot)
 
-Advanced Python script to:
-- Detect duplicate **end-users** via email/phone
-- Merge them intelligently
-- Clean up duplicate phone identities
+This repository contains two production-ready Python automation scripts designed for Zendesk environments with high ticket volume, complex Ops workflows, and the need for strict data hygiene:
 
-## Problem
+1. **Ops Reason Parent–Child Copier**  
+   Automatically detects side-conversation child tickets, copies the parent ticket's *Ops Escalation Reason* into the child, and handles missing-field cases intelligently.  
+   :contentReference[oaicite:0]{index=0}
 
-- Same customer appears as multiple Zendesk users:
-  - Slightly different emails / phones
-  - Different channels
-- Impacts:
-  - Fragmented ticket history
-  - Skewed metrics by user
-  - Messy phone identities (`+9665…`, `050…`, etc.)
+2. **Duplicate Ticket Merge Bot**  
+   Identifies duplicate tickets using requester, subject, and channel logic (with exclusions) and merges them into the correct parent ticket.  
+   :contentReference[oaicite:1]{index=1}
 
-## Solution
+Together, these two scripts reduce manual Ops overhead, ensure consistency across escalations, and maintain a clean Zendesk ticket database.
 
-A time-windowed script that:
+---
 
-1. Defines a **time window** (default: last 60 minutes) via env:
+# 1. Parent–Child Ops Escalation Reason Copier  
+*(copy_ops_reason.py)*
 
-   - `WINDOW_MINUTES`
+### 🔍 What it does  
+This script scans a specific Zendesk View that contains *side conversation child tickets*. For each child ticket, it:
 
-2. Finds all **solved tickets** in that window using time-sliced search (adaptive to avoid 422 errors).
-3. Collects **requesters** and counts solved tickets per requester.
-4. For each requester:
-   - Collects identifiers:
-     - Normalized email
-     - Normalized phone
-     - Identities from `/users/{id}/identities`
-   - Uses `/users/search?query=<term>` to find other end-users with **exact normalized email/phone**.
-   - Builds a **cluster** of matching end-users.
+- Identifies the correct **parent ticket** using `external_id`  
+- Pulls the **Ops Escalation Reason** field from the parent  
+- Copies the field to the child  
+- If the parent does **not** have Ops Escalation Reason:
+  - Adds an **internal note** to the parent with requester + assignee details  
+- Generates a final summary log of all actions
 
-5. For each cluster:
-   - Chooses **survivor** using:
-     1. Highest **solved ticket count** in window
-     2. If tie: `verified == true`
-     3. If still tie: **oldest `created_at`**
-   - Plans merges: all others → survivor
-   - Supports dry run via `DRY_RUN=true`.
+### 🧠 Key Features  
+- Reliable detection of parent ticket IDs from side conversation metadata  
+- Smart caching for:
+  - Parent tickets  
+  - User records  
+- Rate-limit aware (handles Zendesk 429 gracefully)  
+- Retries + backoff logic  
+- Clean logging with clear success/error counts  
+- Zero duplicated API calls unless necessary  
 
-6. After merging:
-   - Removes duplicate **phone identities** with same normalized number, keeping primary where possible.
+### ⚙️ Required Environment Variables  
+| Variable | Description |
+|---------|-------------|
+| `SUBDOMAIN` | Your Zendesk subdomain |
+| `EMAIL` | API user email |
+| `API_TOKEN` | Zendesk API Token |
 
-## Tech Stack
+### 🧩 Important Constants  
+| Constant | Purpose |
+|---------|----------|
+| `OPS_ESCALATION_REASON_ID` | Custom field ID to sync from parent to child |
+| `VIEW_ID` | Zendesk view containing side-conversation child tickets |
 
-- Python 3
-- `requests`
-- Zendesk Search, Users, Identities APIs
+---
 
-## Configuration
+# 2. Duplicate Ticket Merge Bot  
+*(merge_bot.py)*
 
-Env vars:
+### 🔍 What it does  
+This script automatically finds and merges duplicate tickets based on strict grouping logic:
 
-- `SUBDOMAIN`
-- `EMAIL`
-- `API_TOKEN`
-- Optional:
-  - `DRY_RUN` (`true` / `false`)
-  - `WINDOW_MINUTES`
-  - `MAX_MERGES`
-  - `CHUNK_MINUTES`, `MIN_CHUNK_MINUTES`
-  - `CLEAN_DUPLICATE_IDENTITIES`
+Duplicate grouping includes:
+- Same requester  
+- Same subject  
+- Same channel  
+- (Special handling for **side_conversation** tickets)
 
-## Business Impact (Estimate)
+### 🚫 Exclusions  
+- Tickets from specific organization domains  
+  - e.g., government emails: `moc.gov.sa`
+- Channels you don’t want merged  
+  - `whatsapp`  
+  - `any_channel`  
+- Tickets with closed/archived target parents  
 
-- Gradually **defragments the user base** with minimal risk
-- Improves per-customer analytics & CSAT attribution
-- Reduces manual user merge work for admins
+### 🧠 Smart Behaviors  
+- Uses `created_at` timestamp to pick the oldest ticket as the merge target  
+- Avoids merging **into** a closed/archived ticket  
+- Fully logs every merge, including “none merged” scenarios  
+- Simple and safe merge endpoint (`/merge.json`)
 
-## My Role
+### 🧩 Required Environment Variables  
+Same variables as script #1.
 
-I designed the survivor selection logic, time-windowed scanning, and identity cleanup, then implemented the script with robust retry logic and detailed logging.
+---
+
+# 🔧 Installation
+
+Clone the repo and install requirements:
+
+```bash
+git clone <your-repo>
+cd <your-repo>
+pip install -r requirements.txt
