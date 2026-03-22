@@ -8,11 +8,11 @@ on:
       dry_run:
         description: "Preview only (true/false)"
         required: true
-        default: "true"
+        default: "false"
       max_merges:
         description: "Safety cap per run"
         required: true
-        default: "100"
+        default: "500"
 
 concurrency:
   group: merge-endusers-daily
